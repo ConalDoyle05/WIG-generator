@@ -13,8 +13,8 @@ folder always holds exactly one current instruction.
 *Demo output: made-up parts and plain placeholder pictures, so it shows the layout, not a finished deck.*
 
 **Status:** working prototype. 51 automated tests (unit tests, end-to-end builds against synthetic
-templates, and the command line); a GitHub Actions workflow is set up to run them on Linux and
-Windows once the repo is public. Every bug found so far is listed in
+templates, and the command line); a GitHub Actions workflow runs them on Linux and Windows
+(Python 3.9, 3.12, 3.13). Every bug found so far is listed in
 [Bugs fixed](#bugs-fixed), each with a regression test. It has only been run on synthetic data, not on
 a production folder, and only the layout in the demo has been checked by eye. Expect rough edges around
 your own template.
@@ -209,7 +209,7 @@ python -m unittest discover -s tests
 `tests/test_generate_work_instruction.py` covers the logic and full deck builds. `tests/test_cli.py`
 covers flags, prompts, batch mode, `--init`, `--config` and `--pdf`. The PDF test is skipped when
 LibreOffice isn't installed. The GitHub Actions workflow (`.github/workflows/tests.yml`) runs everything on Linux and Windows
-(Python 3.9, 3.12 and 3.13) and builds the demo deck. So far only Python 3.11, 3.12 and 3.13 on Linux have been run.
+(Python 3.9, 3.12 and 3.13) and builds the demo deck. All six combinations pass.
 
 ## Limitations
 
