@@ -1651,6 +1651,18 @@ def build_parser() -> argparse.ArgumentParser:
     where.add_argument("--sample", action="store_true",
                        help="With --init, also add one made-up assembly (12-345-67) so you can run it straight away.")
 
+    ingest = parser.add_argument_group("import from OneNote")
+    ingest.add_argument("--import-onenote", metavar="DOCX",
+                        help="Import steps from a OneNote page exported as Word (a table with a photo and a "
+                             "description per row) into --assembly: writes the numbered photos and the "
+                             "Assembly sheet, then exits without building a deck.")
+    ingest.add_argument("--replace", action="store_true",
+                        help="With --import-onenote, overwrite steps and photos that already exist.")
+    ingest.add_argument("--max-px", type=int, default=1600,
+                        help="With --import-onenote, shrink photos so the longest side is at most this many pixels (default 1600).")
+    ingest.add_argument("--image-format", choices=["jpg", "png"], default="jpg",
+                        help="With --import-onenote, format to save photos in (default jpg, which keeps decks small).")
+
     paths = parser.add_argument_group("where things are")
     paths.add_argument("--config", metavar="FILE", help="JSON file with template slide positions and default paths.")
     paths.add_argument("--design-folder", help="Overrides the default Design Folder root.")
@@ -1734,6 +1746,29 @@ def build_one(assembly_number: str, answers: Answers, make_pdf: bool) -> None:
     if make_pdf:
         print(f"PDF: {export_pdf(output_path)}")
 
+def import_steps_from_onenote(assembly_number: str, args: argparse.Namespace) -> None:
+    """Runs the OneNote import for one assembly and prints what it did."""
+    from wig_import import import_onenote
+    result = import_onenote(
+        Path(args.import_onenote),
+        assembly_base_folder(assembly_number),
+        assembly_excel_path(assembly_number),
+        replace=args.replace,
+        max_px=args.max_px,
+        image_format=args.image_format,
+    )
+    print(f"Imported {result.steps} step(s) for {assembly_number} from OneNote page"
+          + (f' "{result.title}"' if result.title else "") + ".")
+    print(f"Photos:   {section_image_folder(PROCESS_SECTIONS[0], assembly_number)}")
+    print(f"Workbook: {assembly_excel_path(assembly_number)}"
+          + ("  (created: fill in Title Info, Parts and Equipment)" if result.workbook_created else ""))
+    if result.backup_path:
+        print(f"Backup of the previous workbook: {result.backup_path}")
+    if result.removed_images:
+        print(f"Replaced {result.removed_images} existing step photo(s).")
+    for warning in result.warnings:
+        print(f"WARNING: {warning}")
+
 def main(argv: Optional[List[str]] = None) -> int:
     """Runs the tool. Returns 0 when everything built, 1 otherwise."""
     global DESIGN_FOLDER, PART_IMAGE_FOLDER, TEMPLATE_PATH
@@ -1773,6 +1808,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         assemblies = list(dict.fromkeys(normalize_number(number) for number in numbers))
         if not all(assemblies):
             raise ValueError("Assembly number cannot be blank.")
+        if args.import_onenote:
+            if len(assemblies) != 1:
+                raise ValueError("--import-onenote needs exactly one --assembly number.")
+            import_steps_from_onenote(assemblies[0], args)
+            return 0
         if args.pdf and find_soffice() is None:
             raise ValueError("--pdf needs LibreOffice, and it was not found. Install it or set SOFFICE_BIN.")
 

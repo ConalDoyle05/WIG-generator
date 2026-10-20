@@ -17,8 +17,10 @@ from pptx import Presentation
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import generate_work_instruction as wig  # noqa: E402
+from docx_fixture import make_docx, png_bytes  # noqa: E402
 from wig_scaffold import SAMPLE_ASSEMBLY, scaffold_project  # noqa: E402
 
 GLOBALS = [
@@ -244,6 +246,46 @@ class ConfigTests(CliTestCase):
         code, _, err = self.run_cli("--config", str(self.root / "missing.json"), "--assembly", "1-1-1")
         self.assertEqual(code, 1)
         self.assertIn("Could not read config", err)
+
+
+class ImportCliTests(CliTestCase):
+    def page(self, steps=4) -> Path:
+        rows = [(f"Step {i} text", png_bytes((40 * i, 90, 160))) for i in range(1, steps + 1)]
+        return make_docx(self.root / "page.docx", rows)
+
+    def test_import_then_build_end_to_end(self):
+        code, out, err = self.run_cli("--import-onenote", str(self.page()), "--assembly", SAMPLE_ASSEMBLY,
+                                      "--replace", *self.paths())
+        self.assertEqual(code, 0, err)
+        self.assertIn("Imported 4 step(s)", out)
+        code, _, err = self.run_cli("--assembly", SAMPLE_ASSEMBLY, *self.paths(), *self.ANSWERS)
+        self.assertEqual(code, 0, err)
+        slide = next(s for s in Presentation(self.deck()).slides
+                     if any(sh.has_text_frame and "Step 1 text" in sh.text_frame.text for sh in s.shapes))
+        badges = [sh.text_frame.text for sh in slide.shapes if sh.name.startswith(wig.STEP_BADGE_NAME)]
+        self.assertEqual(sorted(badges), ["1", "2", "3", "4"])
+
+    def test_import_refuses_to_overwrite_the_sample_steps_without_replace(self):
+        code, _, err = self.run_cli("--import-onenote", str(self.page()), "--assembly", SAMPLE_ASSEMBLY, *self.paths())
+        self.assertEqual(code, 1)
+        self.assertIn("--replace", err)
+
+    def test_import_needs_exactly_one_assembly(self):
+        code, _, err = self.run_cli("--import-onenote", str(self.page()), "--assembly", "1-1-1", "2-2-2", *self.paths())
+        self.assertEqual(code, 1)
+        self.assertIn("exactly one", err)
+
+    def test_import_of_a_missing_file_is_a_clear_error(self):
+        code, _, err = self.run_cli("--import-onenote", str(self.root / "nope.docx"), "--assembly", "9-9-9", *self.paths())
+        self.assertEqual(code, 1)
+        self.assertIn("not a readable Word", err)
+
+    def test_import_into_a_new_assembly_creates_the_workbook(self):
+        code, out, err = self.run_cli("--import-onenote", str(self.page(2)), "--assembly", "55-100-01", *self.paths())
+        self.assertEqual(code, 0, err)
+        self.assertIn("created", out)
+        self.assertTrue((self.made["design_folder"] / "55" / "55-100-01" / "55-100-01.xlsx").exists())
+        self.assertTrue((self.made["design_folder"] / "55" / "55-100-01" / "Assembly" / "2.jpg").exists())
 
 
 class PdfTests(CliTestCase):

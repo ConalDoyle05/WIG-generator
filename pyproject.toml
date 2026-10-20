@@ -15,4 +15,4 @@ dependencies = ["python-pptx", "openpyxl", "pillow"]
 wig = "generate_work_instruction:main"
 
 [tool.setuptools]
-py-modules = ["generate_work_instruction", "wig_scaffold"]
+py-modules = ["generate_work_instruction", "wig_scaffold", "wig_import"]

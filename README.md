@@ -12,7 +12,7 @@ folder always holds exactly one current instruction.
 
 *Demo output: made-up parts and plain placeholder pictures, so it shows the layout, not a finished deck.*
 
-**Status:** working prototype. 51 automated tests (unit tests, end-to-end builds against synthetic
+**Status:** working prototype. 81 automated tests (unit tests, end-to-end builds against synthetic
 templates, and the command line); a GitHub Actions workflow runs them on Linux and Windows
 (Python 3.9, 3.12, 3.13). Every bug found so far is listed in
 [Bugs fixed](#bugs-fixed), each with a regression test. It has only been run on synthetic data, not on
@@ -96,6 +96,34 @@ wig --assembly-file assemblies.txt --initials CD --welding N --steps-per-slide 4
 The answers apply to every assembly in the run, so batch suits initial releases or a group of
 assemblies that move to the same revision together. A failed assembly doesn't stop the others. WIG
 builds the rest, then lists each failure and exits with 1.
+
+### Import steps from OneNote
+
+If you capture steps in OneNote, you can skip the copy-paste and the photo renaming. Put each step in
+one row of a table (Insert > Table): the photo in one cell and the description in the other. Then export
+the page: **File > Export > Current: Page > Word Document (.docx)**.
+
+```bash
+wig --import-onenote "My page.docx" --assembly 12-345-67
+```
+
+This writes `Assembly/1.jpg`, `2.jpg`, ... in row order, and fills the workbook's Assembly sheet with
+`Step #`, `Description` and `Raw note` (the same text twice, so a later cleanup step can rewrite the
+description and keep your original). If the assembly has no workbook yet it creates one with all the
+sheets; you still fill in Title Info, Parts and Equipment. Then build the deck as usual.
+
+- The photo and the text can be in either column, and OneNote's long run of empty padding rows is ignored.
+- Because rows pair by position, a photo can't end up on the wrong step.
+- It stops, and writes nothing, if a row has text but no photo, if a row has two photos, or if the
+  page has no table with photos. A photo with no text is a warning and leaves that step blank.
+- Photos are turned upright from their EXIF rotation, flattened onto white if they have transparency, and
+  shrunk to at most 1600 px on the long side (`--max-px`). They're saved as JPEG (`--image-format png`
+  for PNG), which keeps decks small.
+- It won't overwrite an assembly that already has steps or photos unless you add `--replace`. An
+  existing workbook is copied to `<name>.xlsx.bak` first. `--replace` also removes old numbered photos,
+  so a leftover `1.png` can't hide a new `1.jpg`.
+- Only import files you made yourself. It reads the Word file's XML with Python's standard library, which
+  isn't hardened against deliberately malicious documents.
 
 ### PDF export
 
@@ -199,6 +227,8 @@ Everything is in `generate_work_instruction.py`, in numbered sections:
 6. Last: `--config` loading, PDF export, and the command line (`main`)
 
 `wig_scaffold.py` holds the starter template, workbook and sample data used by `--init` and the demo.
+`wig_import.py` reads a OneNote Word export for `--import-onenote`. It takes explicit paths and imports
+nothing from the generator.
 
 Adding another process section (say, Inspection) is one entry in `PROCESS_SECTIONS` plus one template
 slide.
@@ -210,7 +240,9 @@ python -m unittest discover -s tests
 ```
 
 `tests/test_generate_work_instruction.py` covers the logic and full deck builds. `tests/test_cli.py`
-covers flags, prompts, batch mode, `--init`, `--config` and `--pdf`. The PDF test is skipped when
+covers flags, prompts, batch mode, `--init`, `--config`, `--pdf` and the import commands, and
+`tests/test_import.py` covers the OneNote import, using a synthetic Word file shaped like OneNote's export
+(`tests/docx_fixture.py`). The PDF test is skipped when
 LibreOffice isn't installed. The GitHub Actions workflow (`.github/workflows/tests.yml`) runs everything on Linux and Windows
 (Python 3.9, 3.12 and 3.13) and builds the demo deck. All six combinations pass.
 
