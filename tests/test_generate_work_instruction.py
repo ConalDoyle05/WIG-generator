@@ -103,7 +103,10 @@ class ImagePathTests(unittest.TestCase):
             folder = Path(tmp)
             make_png(folder / "Part.JPG")
             found = wig.image_path_from_folder(folder, "part")
-            self.assertEqual(found.name, "Part.JPG")
+            # Windows and default macOS volumes ignore case, so the exact-name
+            # check already finds the file under the requested casing there.
+            self.assertTrue(found.exists())
+            self.assertEqual(found.name.lower(), "part.jpg")
 
     def test_missing_image_returns_expected_default_path(self):
         with tempfile.TemporaryDirectory() as tmp:
