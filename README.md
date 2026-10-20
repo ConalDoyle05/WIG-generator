@@ -143,6 +143,9 @@ turns up in the wrong column (for example someone swapped two), WIG prints a war
 - `REV #` is written `<drawing revision>.<instruction revision>`, for example `D.2`. A bare `A` also works.
 - Parts with `BOMNAME` = `MFG BOM` are listed as included subassemblies on the cover slide.
 - Long step descriptions grow their text box downward instead of shrinking the font.
+- Each step picture gets its step number in a red circle on its top-left corner, taken from the `Step #`
+  column, and each process slide is titled by the steps it holds ("Assembly Steps 1–4", or
+  "Assembly Step 9" when a slide holds one). Step numbers need not be consecutive.
 
 ### Template
 
@@ -217,9 +220,6 @@ LibreOffice isn't installed. The GitHub Actions workflow (`.github/workflows/tes
 - The layout inside each slide (card positions, text sizes, 2/4/8-step grids) is fixed in the code.
   `--config` moves *which slide is which*, but changing how a page is laid out means editing the
   constants.
-- The process-slide title counts slides, not steps: with four steps per slide the first page is titled
-  "Assembly Step #1" and the second "Assembly Step #2". Whether it should read as a step range is an
-  open question.
 - The input conventions (`BOMNAME`, `MFG BOM`, `PRODUCTION CELL`, `DWG REV`, the folder layout) come from
   one shop's way of working. They are constants, not configuration.
 - A deck that is open in PowerPoint can't be moved to `CANCELLED`. WIG reports which files it couldn't

@@ -84,7 +84,7 @@ from openpyxl import load_workbook
 from PIL import Image
 from pptx import Presentation
 from pptx.dml.color import RGBColor
-from pptx.enum.shapes import MSO_SHAPE_TYPE
+from pptx.enum.shapes import MSO_SHAPE, MSO_SHAPE_TYPE
 from pptx.enum.text import PP_ALIGN
 from pptx.util import Inches, Pt
 
@@ -205,7 +205,13 @@ PART_CARD_POSITIONS = [
 # Derived so the two can never disagree: one card position is one part slot.
 PARTS_PER_SLIDE = len(PART_CARD_POSITIONS)
 TITLE_IMAGE_BOX = (5.05, 1.75, 4.30, 5.00)
-PROCESS_TITLE_BOX = (3.10, 0.20, 3.80, 0.70)
+PROCESS_TITLE_BOX = (2.30, 0.20, 5.40, 0.70)
+
+# Numbered badge drawn on the top-left corner of each step picture, keyed by steps
+# per slide: (diameter in inches, font size). Smaller grids get smaller badges.
+STEP_BADGE = {2: (0.50, 18), 4: (0.42, 16), 8: (0.34, 12)}
+STEP_BADGE_INSET = 0.05
+STEP_BADGE_NAME = "Step Badge"
 PART_IMAGE_W = 0.95
 PART_IMAGE_H = 0.95
 PART_TEXT_W = 3.45
@@ -920,8 +926,44 @@ def add_bordered_box(slide, text: str, box: Tuple[float, float, float, float],
         border_weight=CONTENT_BORDER_WEIGHT,
     )
 
-def add_picture_fit(slide, image_path: Path, x: float, y: float, w: float, h: float) -> None:
-    """Adds an image centered inside a target box while preserving aspect ratio."""
+def process_slide_title(spec: SectionSpec, items: List[ProcessRow]) -> str:
+    """Titles a process slide by the steps it holds: 'Assembly Steps 1-4' or 'Assembly Step 3'."""
+    first, last = items[0].step_number, items[-1].step_number
+    if len(items) == 1 or first == last:
+        return f"{spec.title_prefix} {first}"
+    return f"{spec.title_prefix}s {first}\u2013{last}"
+
+def add_step_badge(slide, step_number: str, picture, items_per_slide: int) -> None:
+    """Draws the step number in a red circle on the top-left corner of a step picture."""
+    diameter, font_size = STEP_BADGE[items_per_slide]
+    badge = slide.shapes.add_shape(
+        MSO_SHAPE.OVAL,
+        picture.left + Inches(STEP_BADGE_INSET),
+        picture.top + Inches(STEP_BADGE_INSET),
+        Inches(diameter),
+        Inches(diameter),
+    )
+    # The name keeps renumber_all_slides from mistaking a badge for the page number.
+    badge.name = f"{STEP_BADGE_NAME} {step_number}"
+    badge.fill.solid()
+    badge.fill.fore_color.rgb = RGBColor(255, 0, 0)
+    badge.line.fill.background()
+    frame = badge.text_frame
+    frame.margin_left = frame.margin_right = frame.margin_top = frame.margin_bottom = 0
+    frame.text = str(step_number)
+    paragraph = frame.paragraphs[0]
+    paragraph.alignment = PP_ALIGN.CENTER
+    for run in paragraph.runs:
+        run.font.size = Pt(font_size)
+        run.font.bold = True
+        run.font.color.rgb = RGBColor(255, 255, 255)
+
+def add_picture_fit(slide, image_path: Path, x: float, y: float, w: float, h: float):
+    """Adds an image centered inside a target box while preserving aspect ratio.
+
+    Returns the picture shape, whose position is where the image really landed
+    (it is smaller than the box when the aspect ratios differ).
+    """
     try:
         with Image.open(image_path) as img:
             img_w, img_h = img.size
@@ -945,7 +987,7 @@ def add_picture_fit(slide, image_path: Path, x: float, y: float, w: float, h: fl
         final_w = h * img_ratio
     final_x = x + (w - final_w) / 2
     final_y = y + (h - final_h) / 2
-    slide.shapes.add_picture(
+    return slide.shapes.add_picture(
         str(image_path),
         Inches(final_x),
         Inches(final_y),
@@ -961,7 +1003,7 @@ SLIDE_NUMBER_MIN_TOP = 6.50
 
 def is_slide_number_shape(shape) -> bool:
     """Reports whether a shape looks like the template's slide-number placeholder."""
-    if not shape.has_text_frame:
+    if not shape.has_text_frame or shape.name.startswith(STEP_BADGE_NAME):
         return False
     text = shape.text.strip()
     return text.isdigit() and len(text) <= 3
@@ -1154,7 +1196,7 @@ def populate_process_slide(
 
     add_bordered_box(
         slide,
-        f"{spec.title_prefix} #{slide_number}",
+        process_slide_title(spec, items),
         PROCESS_TITLE_BOX,
         font_size=30,
         bold=True,
@@ -1163,11 +1205,12 @@ def populate_process_slide(
     layout_boxes, desc_font_size = PROCESS_LAYOUTS[items_per_slide]
     for index, item in enumerate(items):
         image_box, desc_box = layout_boxes[index]
-        add_picture_fit(
+        picture = add_picture_fit(
             slide,
             section_image_path(spec, assembly_number, item.step_number),
             *image_box,
         )
+        add_step_badge(slide, item.step_number, picture, items_per_slide)
         add_bordered_box(
             slide,
             item.description,

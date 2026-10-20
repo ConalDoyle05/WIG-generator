@@ -266,6 +266,23 @@ def count_pictures(slide) -> int:
     return sum(1 for shape in slide.shapes if shape.shape_type == MSO_SHAPE_TYPE.PICTURE)
 
 
+class ProcessSlideTitleTests(unittest.TestCase):
+    spec = wig.PROCESS_SECTIONS[0]
+
+    def rows(self, *numbers):
+        return [wig.ProcessRow(step_number=n, description="x") for n in numbers]
+
+    def test_range_for_several_steps(self):
+        self.assertEqual(wig.process_slide_title(self.spec, self.rows("1", "2", "3", "4")),
+                         "Assembly Steps 1\u20134")
+
+    def test_single_step(self):
+        self.assertEqual(wig.process_slide_title(self.spec, self.rows("9")), "Assembly Step 9")
+
+    def test_range_uses_the_workbook_step_numbers(self):
+        self.assertEqual(wig.process_slide_title(self.spec, self.rows("5", "7")), "Assembly Steps 5\u20137")
+
+
 class BuildWorkInstructionIntegrationTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -377,6 +394,26 @@ class BuildWorkInstructionIntegrationTests(unittest.TestCase):
         self.assertIsNotNone(find_shape_with_text(prs, "First step"))
         self.assertIsNone(find_shape_with_text(prs, "Testing #1"))
         self.assertIsNone(find_shape_with_text(prs, "Packaging #1"))
+
+    def test_each_step_picture_carries_its_own_number(self):
+        # Regression: renumber_all_slides took the first digit-only shape for the page
+        # number, so the "1" badge was moved to the footer and renumbered.
+        output_path, _ = wig.build_work_instruction(self._data(), items_per_slide=2)
+        prs = Presentation(output_path)
+        slide = next(s for s in prs.slides if slide_has_text(s, "First step"))
+        badges = sorted((sh for sh in slide.shapes if sh.name.startswith(wig.STEP_BADGE_NAME)),
+                        key=lambda sh: sh.left)
+        self.assertEqual([b.text_frame.text for b in badges], ["1", "2"])
+        pictures = sorted((sh for sh in slide.shapes if sh.shape_type == MSO_SHAPE_TYPE.PICTURE),
+                          key=lambda sh: sh.left)
+        for badge, picture in zip(badges, pictures):
+            # Sits on the picture's own top-left corner, not the (larger) box corner.
+            self.assertEqual(badge.left, picture.left + Inches(wig.STEP_BADGE_INSET))
+            self.assertEqual(badge.top, picture.top + Inches(wig.STEP_BADGE_INSET))
+        self.assertTrue(slide_has_text(slide, "Assembly Steps 1\u20132"))
+        # The page number still exists as its own shape.
+        self.assertTrue(any(sh.has_text_frame and not sh.name.startswith(wig.STEP_BADGE_NAME)
+                            and sh.text_frame.text.strip().isdigit() for sh in slide.shapes))
 
     def _template_with_blank_cycle_time_page(self):
         """Puts a blank optional page AHEAD of the welding slide, as a real template can."""
