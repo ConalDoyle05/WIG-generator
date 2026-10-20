@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wig-generator"
+version = "0.2.0"
+description = "Generate manufacturing work-instruction PowerPoints from an Excel workbook and image folders."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+dependencies = ["python-pptx", "openpyxl", "pillow"]
+
+[project.scripts]
+wig = "generate_work_instruction:main"
+
+[tool.setuptools]
+py-modules = ["generate_work_instruction", "wig_scaffold"]
