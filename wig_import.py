@@ -62,6 +62,7 @@ class ImportResult:
     backup_path: Optional[Path]
     removed_images: int
     warnings: List[str] = field(default_factory=list)
+    kept_steps: int = 0
 
 
 def _clean(text: str) -> str:
@@ -270,12 +271,26 @@ def import_onenote(
     if sheet not in wb.sheetnames:  # Testing and Packaging are optional sheets: add one if the workbook lacks it
         wb.create_sheet(sheet).append(["Step #", "Description"])
     ws = wb[sheet]
+    # On --replace, a step whose number and note are unchanged keeps its Description,
+    # Status, Flags, Draft and Source note, so approvals and hand edits survive a re-export.
+    previous = {}
+    for values in ws.iter_rows(min_row=2, max_col=7, values_only=True):
+        values = list(values) + [None] * (7 - len(values))
+        raw = _clean(str(values[2] if values[2] is not None else values[1] or ""))
+        if values[0] is not None and raw:
+            previous[(str(values[0]).strip().removesuffix(".0"), raw)] = values[1:]
     if ws.max_row > 1:
         ws.delete_rows(2, ws.max_row)
     if not ws.cell(row=1, column=3).value:
         ws.cell(row=1, column=3).value = "Raw note"
+    kept = 0
     for number, row in enumerate(rows, start=1):
-        ws.append([number, row.text, row.text])
+        old = previous.get((str(number), row.text))
+        if old is not None:
+            ws.append([number, old[0], row.text, *old[2:]])
+            kept += 1
+        else:
+            ws.append([number, row.text, row.text])
     wb.save(workbook_path)
 
     return ImportResult(
@@ -285,4 +300,5 @@ def import_onenote(
         backup_path=backup_path,
         removed_images=len(stale),
         warnings=warnings,
+        kept_steps=kept,
     )

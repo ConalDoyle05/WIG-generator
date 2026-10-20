@@ -13,6 +13,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
+from openpyxl import load_workbook
 from pptx import Presentation
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -299,6 +300,124 @@ class ImportCliTests(CliTestCase):
         self.assertIn("created", out)
         self.assertTrue((self.made["design_folder"] / "55" / "55-100-01" / "55-100-01.xlsx").exists())
         self.assertTrue((self.made["design_folder"] / "55" / "55-100-01" / "Assembly" / "2.jpg").exists())
+
+
+class PolishCliTests(CliTestCase):
+    """Import -> polish -> approve -> build, as Conal would run it."""
+
+    NOTES = ["Ins P-003 on fixture", "Pl P-004 on P-003 w P-005", "Tight w W1/2 P-001", "Insp for gaps NOPART"]
+
+    def page(self, notes=None) -> Path:
+        notes = notes or self.NOTES
+        return make_docx(self.root / "page.docx", [(n, png_bytes((40 * i, 90, 160))) for i, n in enumerate(notes, 1)])
+
+    def import_and_polish(self, notes=None):
+        return self.run_cli("--import-onenote", str(self.page(notes)), "--assembly", SAMPLE_ASSEMBLY,
+                            "--replace", "--polish", *self.paths())
+
+    def workbook(self):
+        return self.made["design_folder"] / "12" / SAMPLE_ASSEMBLY / f"{SAMPLE_ASSEMBLY}.xlsx"
+
+    def statuses(self):
+        ws = load_workbook(self.workbook())["Assembly"]
+        return [row[3] for row in ws.iter_rows(min_row=2, values_only=True)]
+
+    def approve_all(self):
+        wb = load_workbook(self.workbook())
+        ws = wb["Assembly"]
+        for r in range(2, ws.max_row + 1):
+            if ws.cell(row=r, column=1).value is not None:
+                ws.cell(row=r, column=4).value = "Approved"
+        wb.save(self.workbook())
+
+    def test_import_and_polish_in_one_command(self):
+        code, out, err = self.import_and_polish()
+        self.assertEqual(code, 0, err)
+        self.assertIn("Polished 12-345-67", out)
+        self.assertEqual(self.statuses(), ["Ready", "Ready", "Ready", "Ready"])
+        ws = load_workbook(self.workbook())["Assembly"]
+        self.assertEqual(ws.cell(row=4, column=2).value, 'Tighten with a 1/2" wrench M5 x 16 socket head screw (P-001).')
+        self.assertTrue((self.root / "project" / "glossary.json").exists())
+
+    def test_unapproved_steps_block_a_real_build(self):
+        self.import_and_polish()
+        code, _, err = self.run_cli("--assembly", SAMPLE_ASSEMBLY, *self.paths(), *self.ANSWERS)
+        self.assertEqual(code, 1)
+        self.assertIn("4 step(s) are not approved yet: 1, 2, 3, 4", err)
+        self.assertIn("--draft", err)
+        self.assertFalse(self.deck().exists())
+
+    def test_draft_build_is_watermarked_named_and_replaceable(self):
+        self.import_and_polish(["HARD route the cable", "Tght w W1/2 P-001"])
+        for _ in range(2):   # a second draft replaces the first
+            code, out, err = self.run_cli("--assembly", SAMPLE_ASSEMBLY, *self.paths(), *self.ANSWERS, "--draft")
+            self.assertEqual(code, 0, err)
+        draft = self.deck().with_name(f"{SAMPLE_ASSEMBLY} REV A DRAFT.pptx")
+        self.assertTrue(draft.exists())
+        self.assertFalse(self.deck().exists())
+        prs = Presentation(draft)
+        for slide in prs.slides:
+            self.assertTrue(any(sh.name == "WIG Draft Watermark" for sh in slide.shapes))
+        texts = [sh.text_frame.text for slide in prs.slides for sh in slide.shapes if sh.has_text_frame]
+        self.assertIn(wig.HARD_PLACEHOLDER, texts)
+        for number, slide in enumerate(prs.slides, start=1):
+            marks = [sh for sh in slide.shapes if sh.name == "WIG Draft Watermark"]
+            self.assertEqual([m.text_frame.text for m in marks], [wig.DRAFT_WATERMARK])
+            # The page-number routine must not have mistaken anything for the page number.
+            self.assertIn(str(number), [sh.text_frame.text for sh in slide.shapes if sh.has_text_frame])
+
+    def test_after_approval_the_real_build_works_and_ignores_drafts(self):
+        self.import_and_polish()
+        self.run_cli("--assembly", SAMPLE_ASSEMBLY, *self.paths(), *self.ANSWERS, "--draft")
+        self.approve_all()
+        code, out, err = self.run_cli("--assembly", SAMPLE_ASSEMBLY, *self.paths(), *self.ANSWERS)
+        self.assertEqual(code, 0, err)
+        self.assertTrue(self.deck().exists())
+        prs = Presentation(self.deck())
+        self.assertFalse(any(sh.name == "WIG Draft Watermark" for slide in prs.slides for sh in slide.shapes))
+        # A revision archives the real REV A deck, never the draft.
+        code, out, err = self.run_cli("--assembly", SAMPLE_ASSEMBLY, *self.paths(), "--initials", "CD", "--welding",
+                                      "N", "--steps-per-slide", "4", "--revision", "B", "--change-description", "x")
+        self.assertEqual(code, 0, err)
+        cancelled = self.deck().parent / "CANCELLED"
+        self.assertEqual(sorted(p.name for p in cancelled.iterdir()), [f"{SAMPLE_ASSEMBLY} REV A.pptx"])
+        self.assertTrue(self.deck().with_name(f"{SAMPLE_ASSEMBLY} REV A DRAFT.pptx").exists())
+
+    def test_reimport_keeps_approvals_for_unchanged_notes(self):
+        self.import_and_polish()
+        self.approve_all()
+        changed = list(self.NOTES)
+        changed[1] = "Pl P-004 on P-003"
+        code, out, err = self.run_cli("--import-onenote", str(self.page(changed)), "--assembly", SAMPLE_ASSEMBLY,
+                                      "--replace", "--polish", *self.paths())
+        self.assertEqual(code, 0, err)
+        self.assertIn("Kept the description, status and approval of 3 step(s)", out)
+        self.assertEqual(self.statuses(), ["Approved", "Ready", "Approved", "Approved"])
+
+    def test_glossary_commands(self):
+        glossary = str(self.root / "g.json")
+        code, out, err = self.run_cli("--glossary", glossary, "--glossary-check")
+        self.assertEqual(code, 1)
+        self.assertIn("No glossary", err)
+        self.assertEqual(self.run_cli("--glossary", glossary, "--glossary-add", "snug", "snug down")[0], 0)
+        self.assertEqual(self.run_cli("--glossary", glossary, "--glossary-add-tool", "W12", "12 mm wrench")[0], 0)
+        self.assertEqual(self.run_cli("--glossary", glossary, "--glossary-add-word", "gizmo")[0], 0)
+        code, out, err = self.run_cli("--glossary", glossary, "--glossary-check")
+        self.assertEqual(code, 0, err)
+        self.assertIn("Glossary OK", out)
+        code, _, err = self.run_cli("--glossary", glossary, "--glossary-add-tool", "W13")
+        self.assertEqual(code, 1)
+        self.assertIn("CODE NAME", err)
+
+    def test_init_writes_a_starter_glossary(self):
+        target = self.root / "fresh"
+        self.assertEqual(self.run_cli("--init", str(target))[0], 0)
+        self.assertTrue((target / "glossary.json").exists())
+
+    def test_polish_without_a_workbook_is_a_clear_error(self):
+        code, _, err = self.run_cli("--polish", "--assembly", "77-777-77", *self.paths())
+        self.assertEqual(code, 1)
+        self.assertIn("No workbook", err)
 
 
 class PdfTests(CliTestCase):

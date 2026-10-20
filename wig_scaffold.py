@@ -119,7 +119,11 @@ def scaffold_project(root: Path, sample: bool = False) -> Dict[str, Path]:
     catalog.mkdir(parents=True, exist_ok=True)
     make_template(template)
     make_workbook(root / "Templates" / WORKBOOK_TEMPLATE_NAME)
-    paths = {"design_folder": design, "part_images_folder": catalog, "template_path": template}
+    # The polish step's glossary. Never overwritten: it fills up with your own shorthand.
+    from wig_glossary import write_starter_glossary
+    write_starter_glossary(root / "glossary.json")
+    paths = {"design_folder": design, "part_images_folder": catalog, "template_path": template,
+             "glossary": root / "glossary.json"}
 
     if sample:
         assembly_dir = design / SAMPLE_ASSEMBLY.split("-")[0] / SAMPLE_ASSEMBLY

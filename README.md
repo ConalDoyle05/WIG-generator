@@ -12,7 +12,7 @@ folder always holds exactly one current instruction.
 
 *Demo output: made-up parts and plain placeholder pictures, so it shows the layout, not a finished deck.*
 
-**Status:** working prototype. 88 automated tests (unit tests, end-to-end builds against synthetic
+**Status:** working prototype. 144 automated tests (unit tests, end-to-end builds against synthetic
 templates, and the command line); a GitHub Actions workflow runs them on Linux and Windows
 (Python 3.9, 3.12, 3.13). Every bug found so far is listed in
 [Bugs fixed](#bugs-fixed), each with a regression test. It has only been run on synthetic data, not on
@@ -129,6 +129,98 @@ sheets; you still fill in Title Info, Parts and Equipment. Then build the deck a
 - Only import files you made yourself. It reads the Word file's XML with Python's standard library, which
   isn't hardened against deliberately malicious documents.
 
+### Polish: shorthand notes to professional steps
+
+Notes written on the floor are fast and rough: `Tight w W1/2 P-004`. The polish step turns them into
+finished step text using a glossary you build up over time, and flags anything it can't do:
+
+```bash
+wig --polish --assembly 12-345-67                                   # polish a workbook
+wig --import-onenote "page.docx" --assembly 12-345-67 --polish      # import and polish in one go
+```
+
+`Tight w W1/2 P-004` becomes `Tighten with a 1/2" wrench Bracket (P-004).`: `tight` and `w` are glossary
+terms, `W1/2` is a tool code, and `P-004` is looked up on the workbook's Parts sheet and written as
+name plus number.
+
+**It never guesses.** Every change comes from the glossary or the Parts sheet, so the same note always
+gives the same text. A word it doesn't know (a typo like `Tght`) stays as you typed it and is flagged.
+
+**Three ways to handle a part number**, because you can't always get one on the floor:
+
+| In the note | What happens |
+|---|---|
+| A part number (`P-004`) | Written as `Bracket (P-004)`. A number that looks like a part number but isn't on the Parts sheet is flagged. |
+| `PN?` | Becomes `[part number needed]` and is flagged, so you can look it up in the drawings later. |
+| `NOPART` | No part is involved (an inspection, a wipe-down), so a missing number isn't flagged. The marker is removed. |
+| None of these | Flagged as "No part number". Set `"require_part_number": "when_part_mentioned"` to flag only steps that name a part. |
+
+**Other things that are flagged:** a number with no unit after it (`Torque to 25`; a count like
+`4 screws` is fine), any safety word in the glossary (`torque`, `hot`, `sharp`...), and a word it doesn't
+recognise. Write `HARD` (in capitals) in a note that is too complex to expand: the Description is left
+blank for you to write, and the step is marked HARD.
+
+**What it writes in each step sheet** (Assembly, Testing, Packaging):
+
+| Column | |
+|---|---|
+| A Step #, B Description | What the deck uses. Description gets the polished draft. |
+| C Raw note | Your original note, never changed. |
+| D Status | **Ready** (nothing flagged), **Flagged**, **HARD**, or **Approved**, which only you set. |
+| E Flags | What to fix, in plain words. |
+| F Draft, G Source note | The latest draft and the note it came from, used to spot changes. |
+
+A **To Resolve** sheet lists every flagged and HARD step in one place, which is your worklist for the
+drawings pass. Unrecognised words are counted in `to-add.csv` next to the glossary, most frequent first,
+so you know what to add next.
+
+**Re-running is safe.** Approved steps are left alone unless their note changes, in which case they
+are reopened. A Description you edited by hand is never overwritten: the new draft goes in the Draft
+column and the step is flagged. Words from steps you approve are learned, so they stop being flagged.
+Re-importing with `--replace` keeps the description, status and approval of every step whose note is
+unchanged.
+
+**Approval gate.** Once a sheet has a Status column, a normal build refuses to run until every step on it
+is Approved, and names the ones that aren't. To preview anyway, add `--draft`. The deck is saved as
+`... DRAFT.pptx`, has "DRAFT: NOT APPROVED FOR USE" on every slide, and replaces the previous draft. It
+is never archived or treated as the current instruction. Workbooks that were never polished build as
+before.
+
+### The glossary
+
+`glossary.json` lives next to your Design Folder (`--glossary` or `"paths": {"glossary": ...}` in
+`--config` to move it). `wig --init` writes a small generic starter, and so does the first `--polish` if
+there isn't one. **Keep it out of public repositories:** once it holds your shop's shorthand, tool codes
+and words, it describes how your workplace works.
+
+```json
+{
+  "version": 1,
+  "settings": {"part_format": "{name} ({number})", "require_part_number": "always"},
+  "tools": {"W1/2": {"name": "1/2\" wrench", "phrase": "a 1/2\" wrench"}},
+  "terms": {"tight": "tighten", "w": "with", "insp": "inspect"},
+  "units": {"nm": "N·m", "in": "in"},
+  "count_words": ["screw", "pin"],
+  "safety_words": ["torque", "hot"],
+  "words": ["fixture"]
+}
+```
+
+Terms can be several words (`"tight w": "tighten using"`), and the longest match wins. Tool codes and
+terms are matched ignoring case. The tool phrase carries its own article ("a", "the"), so no grammar is
+guessed. Rather than editing JSON by hand, you can use:
+
+```bash
+wig --glossary-add tght tighten
+wig --glossary-add-tool W12 "12 mm wrench" "a 12 mm wrench"
+wig --glossary-add-word fixture jig
+wig --glossary-check
+```
+
+Each one validates the whole glossary before saving. The checks catch a trailing comma (with the line
+number), a key listed twice, and one shorthand meaning two things, such as a tool code that is also a
+term.
+
 ### PDF export
 
 ```bash
@@ -231,8 +323,9 @@ Everything is in `generate_work_instruction.py`, in numbered sections:
 6. Last: `--config` loading, PDF export, and the command line (`main`)
 
 `wig_scaffold.py` holds the starter template, workbook and sample data used by `--init` and the demo.
-`wig_import.py` reads a OneNote Word export for `--import-onenote`. It takes explicit paths and imports
-nothing from the generator.
+`wig_import.py` reads a OneNote Word export for `--import-onenote`, `wig_polish.py` is the polish step, and
+`wig_glossary.py` loads, checks and edits the glossary. Like the import, they take explicit paths and
+import nothing from the generator.
 
 Adding another process section (say, Inspection) is one entry in `PROCESS_SECTIONS` plus one template
 slide.
@@ -246,13 +339,16 @@ python -m unittest discover -s tests
 `tests/test_generate_work_instruction.py` covers the logic and full deck builds. `tests/test_cli.py`
 covers flags, prompts, batch mode, `--init`, `--config`, `--pdf` and the import commands, and
 `tests/test_import.py` covers the OneNote import, using a synthetic Word file shaped like OneNote's export
-(`tests/docx_fixture.py`). The PDF test is skipped when
+(`tests/docx_fixture.py`), and `tests/test_polish.py` covers the glossary and the polish step. The PDF test is skipped when
 LibreOffice isn't installed. The GitHub Actions workflow (`.github/workflows/tests.yml`) runs everything on Linux and Windows
 (Python 3.9, 3.12 and 3.13) and builds the demo deck. All six combinations pass.
 
 ## Limitations
 
-- Tested on synthetic data only. No one has yet run it against a real production folder.
+- Tested on synthetic data only. No one has yet run it against a real production folder, and the polish
+  step has not yet been tried on real floor notes.
+- The built-in list of correctly spelled words is short on purpose, so expect ordinary words to be
+  flagged at first. Each one you add, or approve in a step, stops being flagged.
 - The layout inside each slide (card positions, text sizes, 2/4/8-step grids) is fixed in the code.
   `--config` moves *which slide is which*, but changing how a page is laid out means editing the
   constants.

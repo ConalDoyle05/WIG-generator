@@ -104,6 +104,13 @@ IMAGE_EXTENSION = IMAGE_EXTENSIONS[0]
 # Superseded work instructions are moved here on a revision. The folder is
 # created alongside Assembly, Testing, and Packaging inside the assembly folder.
 CANCELLED_FOLDER_NAME = "CANCELLED"
+# A deck built with --draft carries this in its file name and a watermark on every
+# slide. Draft decks are never treated as the current work instruction.
+DRAFT_SUFFIX = "DRAFT"
+DRAFT_WATERMARK = "DRAFT: NOT APPROVED FOR USE"
+ALLOW_DRAFT = False
+# The polish glossary. None means glossary.json next to the Design Folder.
+GLOSSARY_PATH: Optional[Path] = None
 
 # =============================================================================
 # 2. EXCEL FORMAT REQUIREMENTS
@@ -326,6 +333,7 @@ class WorkInstructionData:
     tools: List[str]
     # Process steps keyed by sheet name, one entry per PROCESS_SECTIONS spec.
     process_steps: Dict[str, List[ProcessRow]]
+    is_draft: bool = False
 
     def steps_for(self, spec: SectionSpec) -> List[ProcessRow]:
         """Returns the step rows read for one process section."""
@@ -528,7 +536,14 @@ def existing_work_instructions(assembly_number: str) -> List[Path]:
     folder = assembly_base_folder(assembly_number)
     if not folder.is_dir():
         return []
-    return sorted(folder.glob(f"*{assembly_number}*REV*.pptx"), key=revision_sort_key)
+    return sorted(
+        (path for path in folder.glob(f"*{assembly_number}*REV*.pptx") if not is_draft_deck(path)),
+        key=revision_sort_key,
+    )
+
+def is_draft_deck(path: Path) -> bool:
+    """A --draft build: never the current WI, never archived, never read for the revision log."""
+    return path.stem.upper().endswith(f" {DRAFT_SUFFIX}")
 
 def find_existing_wi(assembly_number: str) -> Optional[Path]:
     """Finds the latest existing WI PowerPoint for revision-log preservation."""
@@ -650,10 +665,19 @@ def read_process_sheet(
     cols = resolve_columns(ws, spec.sheet, PROCESS_COLUMNS)
     rows: List[ProcessRow] = []
     missing_step_images: List[str] = []
+    # A sheet that went through `wig --polish` has a Status column (D). Every step on
+    # it must then be Approved by a person before a real deck is built.
+    has_status = normalize_header(ws.cell(row=1, column=STATUS_COLUMN).value) == "STATUS"
+    unapproved: List[str] = []
 
     for row, values in iter_sheet_rows(ws, cols):
         step_number = normalize_number(values[STEP_NUMBER_COL])
         description = values[STEP_DESCRIPTION_COL]
+        status = clean_cell(ws.cell(row=row, column=STATUS_COLUMN).value) if has_status else ""
+        if has_status and status.lower() != "approved":
+            unapproved.append(step_number or f"row {row}")
+            if ALLOW_DRAFT and not description and status.upper() == "HARD":
+                description = HARD_PLACEHOLDER
 
         blank_field = first_blank_field((
             (STEP_NUMBER_COL, step_number),
@@ -672,12 +696,20 @@ def read_process_sheet(
 
     if spec.required and not rows:
         errors.append(f"Sheet '{spec.sheet}' has no valid rows.")
+    if unapproved and not ALLOW_DRAFT:
+        errors.append(
+            f"Sheet '{spec.sheet}': {len(unapproved)} step(s) are not approved yet: {', '.join(unapproved)}.\n"
+            "Review each step and set its Status to Approved, or build a preview with --draft."
+        )
     if missing_step_images:
         errors.append(
             f"Missing {spec.sheet} Images ({len(missing_step_images)}):\n\n"
             + "\n".join(sorted(missing_step_images))
         )
     return rows
+
+STATUS_COLUMN = 4
+HARD_PLACEHOLDER = "[HARD: description still to be written]"
 
 def require_section_folder(spec: SectionSpec, assembly_number: str, errors: List[str]) -> None:
     """Adds a validation error when a process section's image folder is missing."""
@@ -750,6 +782,7 @@ def read_and_validate_data(
         materials=materials,
         tools=tools,
         process_steps=process_steps,
+        is_draft=ALLOW_DRAFT,
     )
 
 # =============================================================================
@@ -1411,7 +1444,17 @@ def build_work_instruction(data: WorkInstructionData, items_per_slide: int) -> T
                 break
     renumber_all_slides(prs)
 
-    output_path = assembly_base_folder(data.assembly_number) / f"{data.assembly_number} REV {data.title_info['REV #']}.pptx"
+    name = f"{data.assembly_number} REV {data.title_info['REV #']}"
+    if data.is_draft:
+        add_draft_watermark(prs)
+        output_path = assembly_base_folder(data.assembly_number) / f"{name} {DRAFT_SUFFIX}.pptx"
+        # Drafts are previews: a new draft replaces the last one.
+        if output_path.exists():
+            output_path.unlink()
+        save_presentation(prs, output_path)
+        return output_path, ArchiveResult()
+
+    output_path = assembly_base_folder(data.assembly_number) / f"{name}.pptx"
     save_presentation(prs, output_path)
 
     # Only a revision supersedes an existing deck. An initial release has
@@ -1420,6 +1463,16 @@ def build_work_instruction(data: WorkInstructionData, items_per_slide: int) -> T
     if data.is_revision:
         archive = archive_superseded_work_instructions(data.assembly_number, output_path)
     return output_path, archive
+
+def add_draft_watermark(prs: Presentation) -> None:
+    """Puts a red DRAFT notice in the footer of every slide."""
+    for slide in prs.slides:
+        add_textbox(slide, DRAFT_WATERMARK, 0.30, 7.02, 6.20, 0.36, font_size=14, bold=True, align_center=False)
+        shape = slide.shapes[-1]
+        shape.name = "WIG Draft Watermark"
+        for paragraph in shape.text_frame.paragraphs:
+            for run in paragraph.runs:
+                run.font.color.rgb = RGBColor(220, 0, 0)
 
 # =============================================================================
 # 11. COMMAND-LINE ENTRY POINT
@@ -1520,6 +1573,7 @@ CONFIG_PATH_KEYS = {
     "design_folder": "DESIGN_FOLDER",
     "part_images_folder": "PART_IMAGE_FOLDER",
     "template_path": "TEMPLATE_PATH",
+    "glossary": "GLOSSARY_PATH",
 }
 
 def load_config(config_path: Path) -> None:
@@ -1683,9 +1737,84 @@ def build_parser() -> argparse.ArgumentParser:
     release.add_argument("--revision", metavar="REV", help="Revise the existing instruction to this revision, for example D.2.")
     answers.add_argument("--change-description", help="One-line description of the change (required with --revision).")
 
+    polish = parser.add_argument_group("polish step (shorthand notes -> professional text)")
+    polish.add_argument("--polish", action="store_true",
+                        help="Turn the Raw notes in --assembly workbooks into draft descriptions, flag what needs "
+                             "you, write a To Resolve sheet, and exit. With --import-onenote, runs after the import.")
+    polish.add_argument("--glossary", metavar="FILE",
+                        help="Glossary JSON (default: glossary.json next to the Design Folder; a starter is "
+                             "created the first time).")
+    polish.add_argument("--glossary-check", action="store_true", help="Check the glossary for mistakes and exit.")
+    polish.add_argument("--glossary-add", nargs=2, metavar=("SHORTHAND", "PHRASE"),
+                        help='Add a shorthand term, e.g. --glossary-add tight tighten, and exit.')
+    polish.add_argument("--glossary-add-tool", nargs="+", metavar="CODE NAME [PHRASE]",
+                        help='Add a tool, e.g. --glossary-add-tool W1/2 "1/2\" wrench" "a 1/2\" wrench", and exit.')
+    polish.add_argument("--glossary-add-word", nargs="+", metavar="WORD",
+                        help="Mark words as correctly spelled, and exit.")
+
     output = parser.add_argument_group("output")
     output.add_argument("--pdf", action="store_true", help="Also export each finished deck to PDF (needs LibreOffice).")
+    output.add_argument("--draft", action="store_true",
+                        help="Build a preview even if steps are not approved: named '... DRAFT.pptx', watermarked on "
+                             "every slide, replaced by the next draft, and never archived or used as the current WI.")
     return parser
+
+def glossary_path() -> Path:
+    return GLOSSARY_PATH if GLOSSARY_PATH else DESIGN_FOLDER.parent / "glossary.json"
+
+def run_glossary_command(args: argparse.Namespace) -> None:
+    """Handles --glossary-check / --glossary-add / --glossary-add-tool / --glossary-add-word."""
+    import wig_glossary
+    path = glossary_path()
+    if args.glossary_add:
+        glossary = wig_glossary.add_term(path, *args.glossary_add)
+        print(f'Added "{args.glossary_add[0]}" -> "{args.glossary_add[1]}" to {path}.')
+    elif args.glossary_add_tool:
+        values = args.glossary_add_tool
+        if len(values) not in (2, 3):
+            raise ValueError('--glossary-add-tool takes CODE NAME [PHRASE], e.g. W1/2 "1/2\" wrench" "a 1/2\" wrench".')
+        glossary = wig_glossary.add_tool(path, *values)
+        print(f'Added tool {values[0]} ({values[1]}) to {path}.')
+    elif args.glossary_add_word:
+        glossary = wig_glossary.add_words(path, args.glossary_add_word)
+        print(f"Added {len(args.glossary_add_word)} word(s) to {path}.")
+    else:
+        if not path.exists():
+            raise ValueError(f"No glossary at {path}. Pass --glossary, or run --polish once to create a starter.")
+        glossary = wig_glossary.load_glossary(path)
+        print(f"Glossary OK: {path}")
+    print("  " + wig_glossary.describe(glossary))
+
+def polish_assembly(assembly_number: str) -> None:
+    """Runs the polish step on one assembly's workbook and prints a short report."""
+    import wig_glossary
+    from wig_polish import polish_workbook
+    path = glossary_path()
+    if wig_glossary.write_starter_glossary(path):
+        print(f"Created a starter glossary at {path}. Add your own shorthand to it as you go.")
+    glossary = wig_glossary.load_glossary(path)
+    report = polish_workbook(
+        assembly_excel_path(assembly_number), glossary,
+        learned_words_path=path.parent / "learned-words.txt",
+        to_add_path=path.parent / "to-add.csv",
+    )
+    counts = report.counts
+    print(f"\nPolished {assembly_number} ({', '.join(report.sections) or 'no step sheets'}): "
+          f"{report.total} step(s): {counts['Ready']} ready, {counts['Flagged']} flagged, "
+          f"{counts['HARD']} HARD, {counts['Approved']} already approved.")
+    if report.reopened:
+        print(f"  {report.reopened} approved step(s) reopened because their note changed.")
+    if report.kept_edits:
+        print(f"  {report.kept_edits} Description(s) you edited by hand were kept.")
+    if report.to_resolve:
+        print(f"  {len(report.to_resolve)} step(s) need you: see the To Resolve sheet.")
+        for section, step, _raw, status, what in report.to_resolve[:10]:
+            print(f"    {section} {step} [{status}]: {what}")
+        if len(report.to_resolve) > 10:
+            print(f"    ... and {len(report.to_resolve) - 10} more.")
+    if report.unknown_words:
+        print(f"  Unrecognised words added to {path.parent / 'to-add.csv'}: {', '.join(sorted(report.unknown_words))}")
+    print("Next: review each step in the workbook, set Status to Approved, then build.")
 
 def read_assembly_file(path: Path) -> List[str]:
     """Reads assembly numbers from a text file, one per line."""
@@ -1774,13 +1903,17 @@ def import_steps_from_onenote(assembly_number: str, args: argparse.Namespace) ->
         print(f"Backup of the previous workbook: {result.backup_path}")
     if result.removed_images:
         print(f"Replaced {result.removed_images} existing step photo(s).")
+    if result.kept_steps:
+        print(f"Kept the description, status and approval of {result.kept_steps} step(s) whose note is "
+              "unchanged. Their photos were still replaced: check them in the deck.")
     for warning in result.warnings:
         print(f"WARNING: {warning}")
 
 def main(argv: Optional[List[str]] = None) -> int:
     """Runs the tool. Returns 0 when everything built, 1 otherwise."""
-    global DESIGN_FOLDER, PART_IMAGE_FOLDER, TEMPLATE_PATH
+    global DESIGN_FOLDER, PART_IMAGE_FOLDER, TEMPLATE_PATH, ALLOW_DRAFT, GLOSSARY_PATH
     args = build_parser().parse_args(argv)
+    ALLOW_DRAFT = args.draft
 
     try:
         if args.sample and not args.init:
@@ -1807,6 +1940,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             PART_IMAGE_FOLDER = Path(args.part_images_folder)
         if args.template_path:
             TEMPLATE_PATH = Path(args.template_path)
+        if args.glossary:
+            GLOSSARY_PATH = Path(args.glossary)
+        if args.glossary_check or args.glossary_add or args.glossary_add_tool or args.glossary_add_word:
+            run_glossary_command(args)
+            return 0
 
         numbers: List[str] = list(args.assembly or [])
         if args.assembly_file:
@@ -1820,6 +1958,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             if len(assemblies) != 1:
                 raise ValueError("--import-onenote needs exactly one --assembly number.")
             import_steps_from_onenote(assemblies[0], args)
+            if args.polish:
+                polish_assembly(assemblies[0])
+            return 0
+        if args.polish:
+            for number in assemblies:
+                polish_assembly(number)
             return 0
         if args.pdf and find_soffice() is None:
             raise ValueError("--pdf needs LibreOffice, and it was not found. Install it or set SOFFICE_BIN.")

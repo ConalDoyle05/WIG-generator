@@ -3,3 +3,8 @@ __pycache__/
 .venv/
 demo/
 .DS_Store
+# Your polish glossary and its lists describe your own shop: keep them out of this repo.
+glossary.json
+learned-words.txt
+to-add.csv
+*.xlsx.bak
