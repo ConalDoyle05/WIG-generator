@@ -7,6 +7,9 @@ Word Document). This reads that table and writes:
     <assembly folder>/Assembly/1.jpg, 2.jpg, ...   one photo per step, in row order
     <assembly folder>/<assembly number>.xlsx       Assembly sheet: Step # | Description | Raw note
 
+Testing and Packaging work the same way: export a page for each and import it with the
+matching section, which fills the Testing or Packaging sheet and folder instead.
+
 Rows pair by position, so photos and descriptions cannot drift apart. The
 columns are found by content, not by position, and OneNote's empty padding
 rows are skipped. Photos are rotated upright from their EXIF flag, flattened
@@ -40,6 +43,7 @@ DEFAULT_MAX_PX = 1600
 IMAGE_FORMATS = {"jpg": ("JPEG", ".jpg"), "png": ("PNG", ".png")}
 STEP_IMAGE_NAME = re.compile(r"\d+\.(png|jpe?g)", re.IGNORECASE)
 SHEET_ASSEMBLY = "Assembly"
+OPTIONAL_SECTIONS = ("Testing", "Packaging")
 
 
 @dataclass
@@ -209,8 +213,12 @@ def import_onenote(
     replace: bool = False,
     max_px: int = DEFAULT_MAX_PX,
     image_format: str = "jpg",
+    sheet: str = SHEET_ASSEMBLY,
+    folder: Optional[str] = None,
 ) -> ImportResult:
-    """Writes the photos and the Assembly sheet for one assembly from a OneNote Word export.
+    """Writes the photos and one process sheet (Assembly, Testing or Packaging) from a OneNote Word export.
+
+    sheet names the workbook sheet to fill and folder the photo subfolder (default: the same name).
 
     Nothing is written until the whole file has been read, validated and every photo
     converted. Existing steps are never overwritten unless replace is True.
@@ -219,24 +227,27 @@ def import_onenote(
         raise ValueError(f"Image format must be one of: {', '.join(IMAGE_FORMATS)}.")
     if max_px < 200:
         raise ValueError("--max-px must be at least 200.")
+    if sheet not in (SHEET_ASSEMBLY, *OPTIONAL_SECTIONS):
+        raise ValueError(f"Section must be one of: {', '.join((SHEET_ASSEMBLY, *OPTIONAL_SECTIONS))}.")
+    folder = folder or sheet
     pil_format, extension = IMAGE_FORMATS[image_format]
 
     title, rows = read_onenote_docx(Path(docx_path))
     warnings = _validate(rows)
     prepared = [prepare_image(row.images[0], max_px) for row in rows]
 
-    image_dir = Path(assembly_dir) / SHEET_ASSEMBLY
+    image_dir = Path(assembly_dir) / folder
     stale = _existing_step_images(image_dir)
     workbook_path = Path(workbook_path)
     workbook_exists = workbook_path.exists()
     wb = load_workbook(workbook_path) if workbook_exists else None
-    if wb is not None and SHEET_ASSEMBLY not in wb.sheetnames:
-        raise ValueError(f"{workbook_path.name} has no '{SHEET_ASSEMBLY}' sheet to put the steps in.")
-    existing_rows = _assembly_rows_in(wb[SHEET_ASSEMBLY]) if wb is not None else 0
+    if wb is not None and sheet == SHEET_ASSEMBLY and sheet not in wb.sheetnames:
+        raise ValueError(f"{workbook_path.name} has no '{sheet}' sheet to put the steps in.")
+    existing_rows = _assembly_rows_in(wb[sheet]) if wb is not None and sheet in wb.sheetnames else 0
     if (stale or existing_rows) and not replace:
         raise ValueError(
-            f"Assembly {Path(assembly_dir).name} already has {existing_rows} step row(s) and "
-            f"{len(stale)} step photo(s). Nothing was changed. Run again with --replace to overwrite them."
+            f"Assembly {Path(assembly_dir).name} already has {existing_rows} {sheet} step row(s) and "
+            f"{len(stale)} {sheet} photo(s). Nothing was changed. Run again with --replace to overwrite them."
         )
 
     backup_path: Optional[Path] = None
@@ -256,7 +267,9 @@ def import_onenote(
         save_kwargs = {"quality": 90, "optimize": True} if pil_format == "JPEG" else {"optimize": True}
         image.save(image_dir / f"{number}{extension}", pil_format, **save_kwargs)
 
-    ws = wb[SHEET_ASSEMBLY]
+    if sheet not in wb.sheetnames:  # Testing and Packaging are optional sheets: add one if the workbook lacks it
+        wb.create_sheet(sheet).append(["Step #", "Description"])
+    ws = wb[sheet]
     if ws.max_row > 1:
         ws.delete_rows(2, ws.max_row)
     if not ws.cell(row=1, column=3).value:

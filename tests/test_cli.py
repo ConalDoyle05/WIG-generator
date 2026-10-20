@@ -257,7 +257,7 @@ class ImportCliTests(CliTestCase):
         code, out, err = self.run_cli("--import-onenote", str(self.page()), "--assembly", SAMPLE_ASSEMBLY,
                                       "--replace", *self.paths())
         self.assertEqual(code, 0, err)
-        self.assertIn("Imported 4 step(s)", out)
+        self.assertIn("Imported 4 Assembly step(s)", out)
         code, _, err = self.run_cli("--assembly", SAMPLE_ASSEMBLY, *self.paths(), *self.ANSWERS)
         self.assertEqual(code, 0, err)
         slide = next(s for s in Presentation(self.deck()).slides
@@ -279,6 +279,19 @@ class ImportCliTests(CliTestCase):
         code, _, err = self.run_cli("--import-onenote", str(self.root / "nope.docx"), "--assembly", "9-9-9", *self.paths())
         self.assertEqual(code, 1)
         self.assertIn("not a readable Word", err)
+
+    def test_testing_and_packaging_pages_import_and_build_into_the_deck(self):
+        for section, count in (("testing", 2), ("packaging", 3)):
+            code, out, err = self.run_cli("--import-onenote", str(self.page(count)), "--assembly", SAMPLE_ASSEMBLY,
+                                          "--section", section, *self.paths())
+            self.assertEqual(code, 0, err)
+            self.assertIn(f"Imported {count} {section.title()} step(s)", out)
+        code, _, err = self.run_cli("--assembly", SAMPLE_ASSEMBLY, *self.paths(), *self.ANSWERS)
+        self.assertEqual(code, 0, err)
+        prs = Presentation(self.deck())
+        texts = [sh.text_frame.text for slide in prs.slides for sh in slide.shapes if sh.has_text_frame]
+        self.assertIn("Testing Steps 1\u20132", texts)
+        self.assertIn("Packaging Steps 1\u20133", texts)
 
     def test_import_into_a_new_assembly_creates_the_workbook(self):
         code, out, err = self.run_cli("--import-onenote", str(self.page(2)), "--assembly", "55-100-01", *self.paths())

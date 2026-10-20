@@ -182,6 +182,53 @@ class OverwriteTests(ImportTestCase):
                          ["Title Info", "Parts", "Equipment", "Assembly", "Testing", "Packaging"])
 
 
+class SectionTests(ImportTestCase):
+    def import_section(self, section, rows, **kwargs):
+        return wig_import.import_onenote(
+            self.docx(rows), self.assembly_dir, self.workbook, sheet=section, **kwargs)
+
+    def sheet_rows(self, name):
+        ws = load_workbook(self.workbook)[name]
+        return [[cell.value for cell in row] for row in ws.iter_rows(min_row=2)]
+
+    def test_testing_fills_its_own_sheet_and_folder_only(self):
+        self.run_import(THREE)
+        result = self.import_section("Testing", [("Check the fit", png_bytes(GREEN)), ("Check torque", png_bytes(RED))])
+        self.assertEqual(result.steps, 2)
+        self.assertEqual(sorted(p.name for p in (self.assembly_dir / "Testing").iterdir()), ["1.jpg", "2.jpg"])
+        self.assertEqual([row[1] for row in self.sheet_rows("Testing")], ["Check the fit", "Check torque"])
+        self.assertEqual(len(self.sheet_rows("Assembly")), 3)  # untouched
+        self.assertTrue(near(dominant(self.assembly_dir / "Testing" / "1.jpg"), GREEN))
+
+    def test_replace_only_touches_its_own_section(self):
+        self.run_import(THREE)
+        self.import_section("Packaging", [("Box it", png_bytes(BLUE))])
+        self.import_section("Packaging", [("Bag it", png_bytes(GREEN)), ("Label it", png_bytes(RED))], replace=True)
+        self.assertEqual([row[1] for row in self.sheet_rows("Packaging")], ["Bag it", "Label it"])
+        self.assertEqual(len(list((self.assembly_dir / "Assembly").iterdir())), 3)
+        self.assertEqual(len(self.sheet_rows("Assembly")), 3)
+
+    def test_existing_section_is_protected_without_replace(self):
+        self.import_section("Testing", [("One", png_bytes())])
+        with self.assertRaises(ValueError) as caught:
+            self.import_section("Testing", [("Two", png_bytes())])
+        self.assertIn("Testing", str(caught.exception))
+        self.assertIn("--replace", str(caught.exception))
+
+    def test_a_workbook_without_a_testing_sheet_gets_one(self):
+        self.run_import(THREE)
+        wb = load_workbook(self.workbook)
+        del wb["Testing"]
+        wb.save(self.workbook)
+        self.import_section("Testing", [("Check", png_bytes())])
+        self.assertEqual([row[1] for row in self.sheet_rows("Testing")], ["Check"])
+
+    def test_unknown_section_is_rejected(self):
+        with self.assertRaises(ValueError) as caught:
+            self.import_section("Inspection", [("x", png_bytes())])
+        self.assertIn("Section must be one of", str(caught.exception))
+
+
 class PhotoTests(unittest.TestCase):
     def test_exif_rotation_is_applied(self):
         # Stored 80x40 with orientation 6 (rotate 90): upright it is 40x80.

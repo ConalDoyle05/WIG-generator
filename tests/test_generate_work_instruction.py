@@ -279,6 +279,12 @@ class ProcessSlideTitleTests(unittest.TestCase):
     def test_single_step(self):
         self.assertEqual(wig.process_slide_title(self.spec, self.rows("9")), "Assembly Step 9")
 
+    def test_testing_and_packaging_are_not_pluralised_badly(self):
+        testing, packaging = wig.PROCESS_SECTIONS[1], wig.PROCESS_SECTIONS[2]
+        self.assertEqual(wig.process_slide_title(testing, self.rows("1", "2")), "Testing Steps 1\u20132")
+        self.assertEqual(wig.process_slide_title(testing, self.rows("3")), "Testing Step 3")
+        self.assertEqual(wig.process_slide_title(packaging, self.rows("1", "2", "3")), "Packaging Steps 1\u20133")
+
     def test_range_uses_the_workbook_step_numbers(self):
         self.assertEqual(wig.process_slide_title(self.spec, self.rows("5", "7")), "Assembly Steps 5\u20137")
 

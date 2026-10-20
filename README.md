@@ -12,7 +12,7 @@ folder always holds exactly one current instruction.
 
 *Demo output: made-up parts and plain placeholder pictures, so it shows the layout, not a finished deck.*
 
-**Status:** working prototype. 81 automated tests (unit tests, end-to-end builds against synthetic
+**Status:** working prototype. 88 automated tests (unit tests, end-to-end builds against synthetic
 templates, and the command line); a GitHub Actions workflow runs them on Linux and Windows
 (Python 3.9, 3.12, 3.13). Every bug found so far is listed in
 [Bugs fixed](#bugs-fixed), each with a regression test. It has only been run on synthetic data, not on
@@ -112,6 +112,10 @@ This writes `Assembly/1.jpg`, `2.jpg`, ... in row order, and fills the workbook'
 description and keep your original). If the assembly has no workbook yet it creates one with all the
 sheets; you still fill in Title Info, Parts and Equipment. Then build the deck as usual.
 
+- **Testing and Packaging** work the same way. Export a separate page for each and import it with
+  `--section testing` or `--section packaging`. That fills the Testing or Packaging sheet and photo
+  folder, leaves the other sections alone, and `--replace` only ever replaces the section you name.
+  Those slides are titled "Testing Steps 1–4" and "Packaging Steps 1–4".
 - The photo and the text can be in either column, and OneNote's long run of empty padding rows is ignored.
 - Because rows pair by position, a photo can't end up on the wrong step.
 - It stops, and writes nothing, if a row has text but no photo, if a row has two photos, or if the

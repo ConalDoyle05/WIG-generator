@@ -927,11 +927,13 @@ def add_bordered_box(slide, text: str, box: Tuple[float, float, float, float],
     )
 
 def process_slide_title(spec: SectionSpec, items: List[ProcessRow]) -> str:
-    """Titles a process slide by the steps it holds: 'Assembly Steps 1-4' or 'Assembly Step 3'."""
+    """Titles a process slide by the steps it holds: 'Assembly Steps 1-4', 'Testing Step 3'."""
+    # "Assembly Step" already names a step; "Testing" and "Packaging" need the word added.
+    singular = spec.title_prefix if spec.title_prefix.endswith("Step") else f"{spec.title_prefix} Step"
     first, last = items[0].step_number, items[-1].step_number
     if len(items) == 1 or first == last:
-        return f"{spec.title_prefix} {first}"
-    return f"{spec.title_prefix}s {first}\u2013{last}"
+        return f"{singular} {first}"
+    return f"{singular}s {first}\u2013{last}"
 
 def add_step_badge(slide, step_number: str, picture, items_per_slide: int) -> None:
     """Draws the step number in a red circle on the top-left corner of a step picture."""
@@ -1656,6 +1658,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Import steps from a OneNote page exported as Word (a table with a photo and a "
                              "description per row) into --assembly: writes the numbered photos and the "
                              "Assembly sheet, then exits without building a deck.")
+    ingest.add_argument("--section", choices=["assembly", "testing", "packaging"], default="assembly",
+                        help="With --import-onenote, which part of the instruction the page holds (default assembly). "
+                             "Export a separate page for Testing and for Packaging.")
     ingest.add_argument("--replace", action="store_true",
                         help="With --import-onenote, overwrite steps and photos that already exist.")
     ingest.add_argument("--max-px", type=int, default=1600,
@@ -1749,6 +1754,7 @@ def build_one(assembly_number: str, answers: Answers, make_pdf: bool) -> None:
 def import_steps_from_onenote(assembly_number: str, args: argparse.Namespace) -> None:
     """Runs the OneNote import for one assembly and prints what it did."""
     from wig_import import import_onenote
+    spec = next(spec for spec in PROCESS_SECTIONS if spec.sheet.lower() == args.section)
     result = import_onenote(
         Path(args.import_onenote),
         assembly_base_folder(assembly_number),
@@ -1756,10 +1762,12 @@ def import_steps_from_onenote(assembly_number: str, args: argparse.Namespace) ->
         replace=args.replace,
         max_px=args.max_px,
         image_format=args.image_format,
+        sheet=spec.sheet,
+        folder=spec.folder,
     )
-    print(f"Imported {result.steps} step(s) for {assembly_number} from OneNote page"
+    print(f"Imported {result.steps} {spec.sheet} step(s) for {assembly_number} from OneNote page"
           + (f' "{result.title}"' if result.title else "") + ".")
-    print(f"Photos:   {section_image_folder(PROCESS_SECTIONS[0], assembly_number)}")
+    print(f"Photos:   {section_image_folder(spec, assembly_number)}")
     print(f"Workbook: {assembly_excel_path(assembly_number)}"
           + ("  (created: fill in Title Info, Parts and Equipment)" if result.workbook_created else ""))
     if result.backup_path:
