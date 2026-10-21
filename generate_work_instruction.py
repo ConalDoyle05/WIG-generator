@@ -1067,6 +1067,20 @@ def add_picture_fit(slide, image_path: Path, x: float, y: float, w: float, h: fl
     )
 
 SLIDE_NUMBER_BOX = (9.10, 7.05, 0.75, 0.30)
+
+# Footer band along the bottom of every slide, below all slide content: the document
+# ID on the left, the DRAFT notice in the middle (drafts only), "Page n of N" on the right.
+# Controlled documents carry their number and revision on every page, not just the cover.
+FOOTER_ENABLED = True
+FOOTER_TOP = 7.22
+FOOTER_HEIGHT = 0.26
+FOOTER_FONT_SIZE = 10
+FOOTER_LEFT_BOX = (0.30, FOOTER_TOP, 3.00, FOOTER_HEIGHT)
+FOOTER_CENTER_BOX = (3.40, FOOTER_TOP, 3.30, FOOTER_HEIGHT)
+FOOTER_RIGHT_BOX = (6.80, FOOTER_TOP, 2.90, FOOTER_HEIGHT)
+FOOTER_COLOR = RGBColor(70, 70, 70)
+FOOTER_NAME = "WIG Footer"
+PAGE_NUMBER_NAME = "WIG Page Number"
 # A shape is only treated as the existing slide-number placeholder if it sits in
 # the footer band. Without this, a content shape whose text happens to be digits
 # (a quantity, a short step description) could be overwritten with a page number.
@@ -1092,23 +1106,43 @@ def find_slide_number_shape(slide):
     return in_footer[0] if in_footer else candidates[0]
 
 def renumber_all_slides(prs: Presentation) -> None:
-    """Adds or updates slide numbers on every slide."""
-    x, y, w, h = SLIDE_NUMBER_BOX
+    """Adds or updates slide numbers on every slide: 'Page 3 of 7' in the footer, or a bare number."""
+    x, y, w, h = FOOTER_RIGHT_BOX if FOOTER_ENABLED else SLIDE_NUMBER_BOX
+    size = FOOTER_FONT_SIZE if FOOTER_ENABLED else 14
+    total = len(prs.slides)
     for number, slide in enumerate(prs.slides, start=1):
+        label = f"Page {number} of {total}" if FOOTER_ENABLED else str(number)
         shape = find_slide_number_shape(slide)
         if shape is None:
-            add_textbox(slide, str(number), x, y, w, h, font_size=14, align_center=True)
-            continue
-        shape.text = str(number)
-        shape.left = Inches(x)
-        shape.top = Inches(y)
-        shape.width = Inches(w)
-        shape.height = Inches(h)
+            add_textbox(slide, label, x, y, w, h, font_size=size, align_center=True)
+            shape = slide.shapes[-1]
+        else:
+            shape.text = label
+            shape.left, shape.top, shape.width, shape.height = Inches(x), Inches(y), Inches(w), Inches(h)
+        shape.name = PAGE_NUMBER_NAME
         for paragraph in shape.text_frame.paragraphs:
-            paragraph.alignment = PP_ALIGN.CENTER
+            paragraph.alignment = PP_ALIGN.RIGHT if FOOTER_ENABLED else PP_ALIGN.CENTER
             for run in paragraph.runs:
-                run.font.size = Pt(14)
+                run.font.size = Pt(size)
                 run.font.bold = False
+                if FOOTER_ENABLED:
+                    run.font.color.rgb = FOOTER_COLOR
+
+def footer_label(data: "WorkInstructionData") -> str:
+    """'WI 12-345-67  REV A  |  10/21/2026': the document's number, revision and build date."""
+    wi_number = data.title_info.get("WI #") or data.assembly_number
+    return f"WI {wi_number}  REV {data.title_info['REV #']}  |  {data.title_info['DATE']}"
+
+def add_footers(prs: Presentation, data: "WorkInstructionData") -> None:
+    """Puts the document ID in the footer of every slide."""
+    label = footer_label(data)
+    for slide in prs.slides:
+        add_textbox(slide, label, *FOOTER_LEFT_BOX, font_size=FOOTER_FONT_SIZE)
+        shape = slide.shapes[-1]
+        shape.name = FOOTER_NAME
+        for paragraph in shape.text_frame.paragraphs:
+            for run in paragraph.runs:
+                run.font.color.rgb = FOOTER_COLOR
 
 def set_parts_title(slide, title: str) -> None:
     """Updates the parts-list title or creates one if the template title is missing."""
@@ -1224,6 +1258,12 @@ def boxes_share_a_column(first, second) -> bool:
     other_left, _, other_width, _ = second
     return other_left < left + width and left < other_left + other_width
 
+def content_bottom_limit() -> float:
+    """Lowest a grown description box may reach: above the footer band when there is one."""
+    if FOOTER_ENABLED:
+        return min(LONG_DESCRIPTION_BOTTOM_LIMIT, FOOTER_TOP - 0.03)
+    return LONG_DESCRIPTION_BOTTOM_LIMIT
+
 def description_bottom_limit(layout_boxes, index: int) -> float:
     """Returns how far down one slot's description box is allowed to grow.
 
@@ -1235,7 +1275,7 @@ def description_bottom_limit(layout_boxes, index: int) -> float:
     """
     desc_box = layout_boxes[index][1]
     _, top, _, _ = desc_box
-    limits = [LONG_DESCRIPTION_BOTTOM_LIMIT]
+    limits = [content_bottom_limit()]
     for image_box, other_desc_box in layout_boxes:
         for other_box in (image_box, other_desc_box):
             _, other_top, _, _ = other_box
@@ -1495,6 +1535,8 @@ def build_work_instruction(data: WorkInstructionData, items_per_slide: int) -> T
                 delete_slide(prs, index)
                 break
     renumber_all_slides(prs)
+    if FOOTER_ENABLED:
+        add_footers(prs, data)
 
     name = f"{data.assembly_number} REV {data.title_info['REV #']}"
     if data.is_draft:
@@ -1518,8 +1560,10 @@ def build_work_instruction(data: WorkInstructionData, items_per_slide: int) -> T
 
 def add_draft_watermark(prs: Presentation) -> None:
     """Puts a red DRAFT notice in the footer of every slide."""
+    box = FOOTER_CENTER_BOX if FOOTER_ENABLED else (0.30, 7.02, 6.20, 0.36)
+    size = FOOTER_FONT_SIZE + 1 if FOOTER_ENABLED else 14
     for slide in prs.slides:
-        add_textbox(slide, DRAFT_WATERMARK, 0.30, 7.02, 6.20, 0.36, font_size=14, bold=True, align_center=False)
+        add_textbox(slide, DRAFT_WATERMARK, *box, font_size=size, bold=True, align_center=FOOTER_ENABLED)
         shape = slide.shapes[-1]
         shape.name = "WIG Draft Watermark"
         for paragraph in shape.text_frame.paragraphs:
@@ -1809,6 +1853,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     output = parser.add_argument_group("output")
     output.add_argument("--pdf", action="store_true", help="Also export each finished deck to PDF (needs LibreOffice).")
+    output.add_argument("--no-footer", action="store_true",
+                        help="Leave out the footer (WI number, revision, date, 'Page n of N') and just number the "
+                             "slides, for templates that have their own footer.")
     output.add_argument("--draft", action="store_true",
                         help="Build a preview even if steps are not approved: named '... DRAFT.pptx', watermarked on "
                              "every slide, replaced by the next draft, and never archived or used as the current WI.")
@@ -2042,9 +2089,10 @@ def import_steps_from_onenote(assembly_number: str, args: argparse.Namespace) ->
 
 def main(argv: Optional[List[str]] = None) -> int:
     """Runs the tool. Returns 0 when everything built, 1 otherwise."""
-    global DESIGN_FOLDER, PART_IMAGE_FOLDER, TEMPLATE_PATH, ALLOW_DRAFT, GLOSSARY_PATH
+    global DESIGN_FOLDER, PART_IMAGE_FOLDER, TEMPLATE_PATH, ALLOW_DRAFT, GLOSSARY_PATH, FOOTER_ENABLED
     args = build_parser().parse_args(argv)
     ALLOW_DRAFT = args.draft
+    FOOTER_ENABLED = not args.no_footer
 
     try:
         if args.sample and not args.init:

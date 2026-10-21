@@ -15,6 +15,7 @@ from unittest import mock
 
 from openpyxl import load_workbook
 from pptx import Presentation
+from pptx.util import Inches
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -27,7 +28,7 @@ from wig_scaffold import SAMPLE_ASSEMBLY, scaffold_project  # noqa: E402
 GLOBALS = [
     "DESIGN_FOLDER", "PART_IMAGE_FOLDER", "TEMPLATE_PATH", "TITLE_SLIDE_INDEX",
     "REVISION_LOG_SLIDE_INDEX", "WELDING_SLIDE_INDEX", "PARTS_TEMPLATE_SLIDE_INDEX",
-    "EQUIPMENT_SLIDE_INDEX", "PROCESS_SECTIONS",
+    "EQUIPMENT_SLIDE_INDEX", "PROCESS_SECTIONS", "FOOTER_ENABLED", "ALLOW_DRAFT", "GLOSSARY_PATH",
 ]
 
 
@@ -365,11 +366,12 @@ class PolishCliTests(PolishHelpers):
             self.assertTrue(any(sh.name == "WIG Draft Watermark" for sh in slide.shapes))
         texts = [sh.text_frame.text for slide in prs.slides for sh in slide.shapes if sh.has_text_frame]
         self.assertIn(wig.HARD_PLACEHOLDER, texts)
+        total = len(prs.slides)
         for number, slide in enumerate(prs.slides, start=1):
             marks = [sh for sh in slide.shapes if sh.name == "WIG Draft Watermark"]
             self.assertEqual([m.text_frame.text for m in marks], [wig.DRAFT_WATERMARK])
             # The page-number routine must not have mistaken anything for the page number.
-            self.assertIn(str(number), [sh.text_frame.text for sh in slide.shapes if sh.has_text_frame])
+            self.assertIn(f"Page {number} of {total}", [sh.text_frame.text for sh in slide.shapes if sh.has_text_frame])
 
     def test_after_approval_the_real_build_works_and_ignores_drafts(self):
         self.import_and_polish()
@@ -444,6 +446,51 @@ class ToolsPageTests(PolishHelpers):
                  if sh.has_text_frame and sh.text_frame.text.startswith("Tools")]
         self.assertEqual(texts, ['Tools\x0b- 1/2" wrench (W1/2)\x0b- #2 Phillips screwdriver (PH2)'
                                  '\x0b- Torque screwdriver (TQS)\x0b- Torque driver\x0b- Assembly fixture'])
+
+
+class FooterTests(CliTestCase):
+    def slides(self, *extra):
+        code, _, err = self.run_cli("--assembly", SAMPLE_ASSEMBLY, *self.paths(), *self.ANSWERS, *extra)
+        self.assertEqual(code, 0, err)
+        name = f"{SAMPLE_ASSEMBLY} REV A{' DRAFT' if '--draft' in extra else ''}.pptx"
+        return list(Presentation(self.deck().with_name(name)).slides)
+
+    @staticmethod
+    def named(slide, name):
+        return [sh for sh in slide.shapes if sh.name == name]
+
+    def test_every_slide_carries_the_document_id_and_page_n_of_n(self):
+        slides = self.slides()
+        for number, slide in enumerate(slides, start=1):
+            footer = self.named(slide, wig.FOOTER_NAME)
+            self.assertEqual(len(footer), 1)
+            self.assertRegex(footer[0].text_frame.text, rf"^WI {SAMPLE_ASSEMBLY}  REV A  \|  \d\d/\d\d/\d{{4}}$")
+            page = self.named(slide, wig.PAGE_NUMBER_NAME)
+            self.assertEqual([p.text_frame.text for p in page], [f"Page {number} of {len(slides)}"])
+            for shape in footer + page:
+                self.assertGreaterEqual(shape.top, Inches(wig.FOOTER_TOP) - 1)
+                self.assertLessEqual(shape.top + shape.height, Inches(7.5))
+
+    def test_footer_sits_below_every_content_shape(self):
+        for slide in self.slides():
+            for shape in slide.shapes:
+                if shape.name in (wig.FOOTER_NAME, wig.PAGE_NUMBER_NAME):
+                    continue
+                self.assertLessEqual(shape.top + shape.height, Inches(wig.FOOTER_TOP) + 1, shape.name)
+
+    def test_draft_notice_sits_between_the_footer_texts(self):
+        for slide in self.slides("--draft"):
+            left, = self.named(slide, wig.FOOTER_NAME)
+            mark, = self.named(slide, "WIG Draft Watermark")
+            page, = self.named(slide, wig.PAGE_NUMBER_NAME)
+            self.assertLessEqual(left.left + left.width, mark.left)
+            self.assertLessEqual(mark.left + mark.width, page.left)
+
+    def test_no_footer_keeps_the_plain_page_number(self):
+        slides = self.slides("--no-footer")
+        for number, slide in enumerate(slides, start=1):
+            self.assertEqual(self.named(slide, wig.FOOTER_NAME), [])
+            self.assertEqual([p.text_frame.text for p in self.named(slide, wig.PAGE_NUMBER_NAME)], [str(number)])
 
 
 class CheckTests(CliTestCase):

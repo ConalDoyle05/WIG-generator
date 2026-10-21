@@ -12,7 +12,7 @@ folder always holds exactly one current instruction.
 
 *Demo output: made-up parts and plain placeholder pictures, so it shows the layout, not a finished deck.*
 
-**Status:** working prototype. 154 automated tests (unit tests, end-to-end builds against synthetic
+**Status:** working prototype. 159 automated tests (unit tests, end-to-end builds against synthetic
 templates, and the command line); a GitHub Actions workflow runs them on Linux and Windows
 (Python 3.9, 3.12, 3.13). Every bug found so far is listed in
 [Bugs fixed](#bugs-fixed), each with a regression test. It has only been run on synthetic data, not on
@@ -241,6 +241,14 @@ write anything. It also prints the parts, materials and tools it found, the step
 status counts from the polish step, and which deck is current. The exit code is 0 when the assembly
 would build and 1 when it wouldn't, so it works in scripts and in batch mode with several
 `--assembly` numbers.
+
+### Footer on every page
+
+Every slide gets a footer, as controlled documents need: `WI 12-345-67  REV A  |  10/21/2026` on the
+left (the WI number and revision from Title Info, and the build date) and `Page 3 of 7` on the right. A
+draft also shows its DRAFT notice in the middle. Long step descriptions stop growing above the footer, so
+nothing runs into it. If your template already has its own footer, add `--no-footer` to keep just a
+plain page number, as before.
 
 ### PDF export
 

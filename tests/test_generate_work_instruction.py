@@ -149,6 +149,18 @@ class DescriptionBoxGrowthTests(unittest.TestCase):
         _, y, _, h = wig.adjust_description_box(box, long_text, bottom_limit=7.30)
         self.assertLessEqual(y + h, 7.30 + 1e-9)
 
+    def test_grown_descriptions_stop_above_the_footer(self):
+        layout_boxes, _ = wig.PROCESS_LAYOUTS[4]
+        bottom_row = [i for i, (_, desc) in enumerate(layout_boxes) if desc[1] > 6]
+        for index in bottom_row:
+            self.assertLess(wig.description_bottom_limit(layout_boxes, index), wig.FOOTER_TOP)
+        original = wig.FOOTER_ENABLED
+        try:
+            wig.FOOTER_ENABLED = False
+            self.assertEqual(wig.content_bottom_limit(), wig.LONG_DESCRIPTION_BOTTOM_LIMIT)
+        finally:
+            wig.FOOTER_ENABLED = original
+
     def test_description_bottom_limit_stops_above_the_box_below_it(self):
         layout_boxes = [
             ((0, 0, 1, 1), (0, 1.0, 1, 0.5)),
@@ -434,8 +446,8 @@ class BuildWorkInstructionIntegrationTests(unittest.TestCase):
             self.assertEqual(badge.top, picture.top + Inches(wig.STEP_BADGE_INSET))
         self.assertTrue(slide_has_text(slide, "Assembly Steps 1\u20132"))
         # The page number still exists as its own shape.
-        self.assertTrue(any(sh.has_text_frame and not sh.name.startswith(wig.STEP_BADGE_NAME)
-                            and sh.text_frame.text.strip().isdigit() for sh in slide.shapes))
+        self.assertTrue(any(sh.name == wig.PAGE_NUMBER_NAME and sh.text_frame.text.startswith("Page ")
+                            for sh in slide.shapes))
 
     def _template_with_blank_cycle_time_page(self):
         """Puts a blank optional page AHEAD of the welding slide, as a real template can."""
