@@ -12,7 +12,7 @@ folder always holds exactly one current instruction.
 
 *Demo output: made-up parts and plain placeholder pictures, so it shows the layout, not a finished deck.*
 
-**Status:** working prototype. 159 automated tests (unit tests, end-to-end builds against synthetic
+**Status:** working prototype. 169 automated tests (unit tests, end-to-end builds against synthetic
 templates, and the command line); a GitHub Actions workflow runs them on Linux and Windows
 (Python 3.9, 3.12, 3.13). Every bug found so far is listed in
 [Bugs fixed](#bugs-fixed), each with a regression test. It has only been run on synthetic data, not on
@@ -276,8 +276,19 @@ Templates/
     XX-XXX-XX REV XX.pptx
 ```
 
-Images can be `.png`, `.jpg` or `.jpeg`. The file name must match the part, assembly or step number
+Images can be `.png`, `.jpg`, `.jpeg` or `.heic` (iPhone photos; this needs the `pillow-heif` package,
+which `requirements.txt` installs). The file name must match the part, assembly or step number
 exactly.
+
+Photos are fixed as they go into the deck. Your files on disk are never changed:
+
+- A phone photo saved sideways with a rotation flag is turned upright. Some viewers, LibreOffice
+  among them, ignore that flag and would otherwise show it sideways.
+- Anything over 2000 px on the long side is shrunk, which keeps decks small and still prints sharp.
+- HEIC and other formats PowerPoint can't embed become JPEG. A PNG stays PNG, so screenshots and
+  diagrams stay crisp.
+
+A photo that is already fine is embedded exactly as it is.
 
 ### Workbook
 

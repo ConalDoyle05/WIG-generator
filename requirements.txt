@@ -1,3 +1,4 @@
 python-pptx
 openpyxl
 pillow
+pillow-heif

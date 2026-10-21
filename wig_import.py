@@ -21,7 +21,6 @@ behaves the same whether the generator runs as a script or as the `wig` command.
 
 from __future__ import annotations
 
-import io
 import re
 import shutil
 import zipfile
@@ -31,7 +30,9 @@ from typing import List, Optional, Tuple
 from xml.etree import ElementTree as ET
 
 from openpyxl import load_workbook
-from PIL import Image, ImageOps, UnidentifiedImageError
+from PIL import Image
+
+import wig_images
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
@@ -175,22 +176,7 @@ def _validate(rows: List[DocRow]) -> List[str]:
 
 def prepare_image(data: bytes, max_px: int) -> Image.Image:
     """Opens a photo, applies its EXIF rotation, flattens transparency onto white, and shrinks it."""
-    try:
-        image = Image.open(io.BytesIO(data))
-        image.load()
-    except (UnidentifiedImageError, OSError) as exc:
-        raise ValueError(f"A picture in the Word file could not be read: {exc}")
-    image = ImageOps.exif_transpose(image)
-    if image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info):
-        rgba = image.convert("RGBA")
-        flat = Image.new("RGB", rgba.size, (255, 255, 255))
-        flat.paste(rgba, mask=rgba.getchannel("A"))
-        image = flat
-    else:
-        image = image.convert("RGB")
-    if max(image.size) > max_px:
-        image.thumbnail((max_px, max_px), Image.LANCZOS)
-    return image
+    return wig_images.normalize(wig_images.open_image(data, "a picture in the Word file"), max_px)
 
 
 def _existing_step_images(folder: Path) -> List[Path]:

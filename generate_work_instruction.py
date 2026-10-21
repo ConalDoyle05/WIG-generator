@@ -88,6 +88,8 @@ from pptx.enum.shapes import MSO_SHAPE, MSO_SHAPE_TYPE
 from pptx.enum.text import PP_ALIGN
 from pptx.util import Inches, Pt
 
+import wig_images
+
 # =============================================================================
 # 1. PROJECT PATHS AND FILE CONVENTIONS
 # =============================================================================
@@ -99,7 +101,8 @@ TEMPLATE_PATH = SCRIPT_DIR / "Templates" / "XX-XXX-XX REV XX.pptx"
 EXCEL_EXTENSION = ".xlsx"
 # Accepted image formats for part catalog, final assembly, and process images.
 # The first entry is used when reporting an expected-but-missing image.
-IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg"]
+# HEIC (iPhone) photos need pillow-heif; they are converted to JPEG when embedded.
+IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".heic", ".heif"]
 IMAGE_EXTENSION = IMAGE_EXTENSIONS[0]
 # Superseded work instructions are moved here on a revision. The folder is
 # created alongside Assembly, Testing, and Packaging inside the assembly folder.
@@ -1035,13 +1038,15 @@ def add_picture_fit(slide, image_path: Path, x: float, y: float, w: float, h: fl
     Returns the picture shape, whose position is where the image really landed
     (it is smaller than the box when the aspect ratios differ).
     """
+    # Rotated, oversized or HEIC photos are fixed in memory; the file on disk is untouched.
     try:
-        with Image.open(image_path) as img:
-            img_w, img_h = img.size
-    except OSError as error:
+        source, (img_w, img_h) = wig_images.prepare_for_slide(Path(image_path))
+    except ValueError as error:
+        if "pillow-heif" in str(error):
+            raise
         raise ValueError(
             f"Could not read image file:\n  {image_path}\n\n"
-            "The file exists but is not a readable PNG, JPG, or JPEG. It may be "
+            "The file exists but is not a readable PNG, JPG, JPEG or HEIC. It may be "
             "corrupt, still uploading, or saved with the wrong extension.\n"
             f"Underlying error: {error}"
         )
@@ -1059,7 +1064,7 @@ def add_picture_fit(slide, image_path: Path, x: float, y: float, w: float, h: fl
     final_x = x + (w - final_w) / 2
     final_y = y + (h - final_h) / 2
     return slide.shapes.add_picture(
-        str(image_path),
+        source,
         Inches(final_x),
         Inches(final_y),
         width=Inches(final_w),

@@ -9,10 +9,10 @@ description = "Generate manufacturing work-instruction PowerPoints from an Excel
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.9"
-dependencies = ["python-pptx", "openpyxl", "pillow"]
+dependencies = ["python-pptx", "openpyxl", "pillow", "pillow-heif"]
 
 [project.scripts]
 wig = "generate_work_instruction:main"
 
 [tool.setuptools]
-py-modules = ["generate_work_instruction", "wig_scaffold", "wig_import", "wig_glossary", "wig_polish"]
+py-modules = ["generate_work_instruction", "wig_scaffold", "wig_import", "wig_glossary", "wig_polish", "wig_images"]
