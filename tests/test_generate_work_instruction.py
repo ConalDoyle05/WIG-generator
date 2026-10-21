@@ -289,6 +289,22 @@ class ProcessSlideTitleTests(unittest.TestCase):
         self.assertEqual(wig.process_slide_title(self.spec, self.rows("5", "7")), "Assembly Steps 5\u20137")
 
 
+class ToolListTests(unittest.TestCase):
+    def test_step_tools_come_first_then_equipment_sheet_extras_without_duplicates(self):
+        merged = wig.merge_tool_lists(
+            ['1/2" wrench (W1/2)', "#2 Phillips screwdriver (PH2)", '1/2" wrench (W1/2)'],
+            ['1/2" WRENCH', "Assembly fixture", "assembly fixture"],
+        )
+        self.assertEqual(merged, ['1/2" wrench (W1/2)', "#2 Phillips screwdriver (PH2)", "Assembly fixture"])
+
+    def test_equipment_font_shrinks_for_long_lists(self):
+        self.assertEqual(wig.equipment_font_size(3), 16)
+        self.assertEqual(wig.equipment_font_size(13), 16)
+        self.assertEqual(wig.equipment_font_size(15), 13)
+        self.assertEqual(wig.equipment_font_size(20), 11)
+        self.assertEqual(wig.equipment_font_size(40), 9)
+
+
 class BuildWorkInstructionIntegrationTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()

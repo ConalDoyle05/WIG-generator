@@ -12,7 +12,7 @@ folder always holds exactly one current instruction.
 
 *Demo output: made-up parts and plain placeholder pictures, so it shows the layout, not a finished deck.*
 
-**Status:** working prototype. 144 automated tests (unit tests, end-to-end builds against synthetic
+**Status:** working prototype. 154 automated tests (unit tests, end-to-end builds against synthetic
 templates, and the command line); a GitHub Actions workflow runs them on Linux and Windows
 (Python 3.9, 3.12, 3.13). Every bug found so far is listed in
 [Bugs fixed](#bugs-fixed), each with a regression test. It has only been run on synthetic data, not on
@@ -169,6 +169,7 @@ blank for you to write, and the step is marked HARD.
 | D Status | **Ready** (nothing flagged), **Flagged**, **HARD**, or **Approved**, which only you set. |
 | E Flags | What to fix, in plain words. |
 | F Draft, G Source note | The latest draft and the note it came from, used to spot changes. |
+| H Tools | The tools the note used, written `1/2" wrench (W1/2); #2 Phillips screwdriver (PH2)`. |
 
 A **To Resolve** sheet lists every flagged and HARD step in one place, which is your worklist for the
 drawings pass. Unrecognised words are counted in `to-add.csv` next to the glossary, most frequent first,
@@ -185,6 +186,13 @@ is Approved, and names the ones that aren't. To preview anyway, add `--draft`. T
 `... DRAFT.pptx`, has "DRAFT: NOT APPROVED FOR USE" on every slide, and replaces the previous draft. It
 is never archived or treated as the current instruction. Workbooks that were never polished build as
 before.
+
+**The tools page fills itself in.** The equipment slide lists every tool the steps use, each once,
+in the order it is first used across Assembly, Testing and Packaging, with its code so it matches the
+label on the tool: `1/2" wrench (W1/2)`. Anything extra you type in the Equipment sheet's Tools column
+comes after, and a tool already listed is not repeated (compared by name, ignoring the code). Long lists
+get a smaller font so they still fit. Workbooks that were never polished show only the Equipment sheet,
+as before.
 
 ### The glossary
 
@@ -220,6 +228,19 @@ wig --glossary-check
 Each one validates the whole glossary before saving. The checks catch a trailing comma (with the line
 number), a key listed twice, and one shorthand meaning two things, such as a tool code that is also a
 term.
+
+### Check before you build
+
+```bash
+wig --check --assembly 12-345-67           # add --draft to check whether a draft would build
+```
+
+This runs every check the build runs: the workbook, photos, part catalog images, the template and its
+slide count, and the approval gate. It then lists every problem, one per line, and doesn't build or
+write anything. It also prints the parts, materials and tools it found, the steps per section, the
+status counts from the polish step, and which deck is current. The exit code is 0 when the assembly
+would build and 1 when it wouldn't, so it works in scripts and in batch mode with several
+`--assembly` numbers.
 
 ### PDF export
 

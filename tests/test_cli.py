@@ -302,8 +302,8 @@ class ImportCliTests(CliTestCase):
         self.assertTrue((self.made["design_folder"] / "55" / "55-100-01" / "Assembly" / "2.jpg").exists())
 
 
-class PolishCliTests(CliTestCase):
-    """Import -> polish -> approve -> build, as Conal would run it."""
+class PolishHelpers(CliTestCase):
+    """Shared steps for import -> polish -> approve -> build. Holds no tests itself."""
 
     NOTES = ["Ins P-003 on fixture", "Pl P-004 on P-003 w P-005", "Tight w W1/2 P-001", "Insp for gaps NOPART"]
 
@@ -329,6 +329,11 @@ class PolishCliTests(CliTestCase):
             if ws.cell(row=r, column=1).value is not None:
                 ws.cell(row=r, column=4).value = "Approved"
         wb.save(self.workbook())
+
+
+
+class PolishCliTests(PolishHelpers):
+    """Import -> polish -> approve -> build, as Conal would run it."""
 
     def test_import_and_polish_in_one_command(self):
         code, out, err = self.import_and_polish()
@@ -418,6 +423,83 @@ class PolishCliTests(CliTestCase):
         code, _, err = self.run_cli("--polish", "--assembly", "77-777-77", *self.paths())
         self.assertEqual(code, 1)
         self.assertIn("No workbook", err)
+
+
+class ToolsPageTests(PolishHelpers):
+    def test_tools_used_in_steps_are_listed_on_the_equipment_page(self):
+        self.import_and_polish(["Tight w W1/2 P-001", "Seat P-004 w PH2 then W1/2"])
+        page = make_docx(self.root / "testing.docx", [("Chk torque w TQS P-001", png_bytes())])
+        self.run_cli("--import-onenote", str(page), "--assembly", SAMPLE_ASSEMBLY, "--section", "testing",
+                     "--polish", *self.paths())
+        wb = load_workbook(self.workbook())
+        for sheet in ("Assembly", "Testing"):
+            ws = wb[sheet]
+            for r in range(2, ws.max_row + 1):
+                if ws.cell(row=r, column=1).value is not None:
+                    ws.cell(row=r, column=4).value = "Approved"
+        wb.save(self.workbook())
+        code, _, err = self.run_cli("--assembly", SAMPLE_ASSEMBLY, *self.paths(), *self.ANSWERS)
+        self.assertEqual(code, 0, err)
+        texts = [sh.text_frame.text for slide in Presentation(self.deck()).slides for sh in slide.shapes
+                 if sh.has_text_frame and sh.text_frame.text.startswith("Tools")]
+        self.assertEqual(texts, ['Tools\x0b- 1/2" wrench (W1/2)\x0b- #2 Phillips screwdriver (PH2)'
+                                 '\x0b- Torque screwdriver (TQS)\x0b- Torque driver\x0b- Assembly fixture'])
+
+
+class CheckTests(CliTestCase):
+    def check(self, *extra):
+        return self.run_cli("--check", "--assembly", SAMPLE_ASSEMBLY, *self.paths(), *extra)
+
+    def test_a_ready_assembly_passes_and_nothing_is_written(self):
+        workbook = self.made["assembly_dir"] / f"{SAMPLE_ASSEMBLY}.xlsx"
+        before = sorted(p.name for p in self.made["assembly_dir"].iterdir()), workbook.stat().st_mtime_ns
+        code, out, err = self.check()
+        self.assertEqual(code, 0, err + out)
+        self.assertIn("Ready to build.", out)
+        self.assertIn("5 part(s)", out)
+        self.assertIn("Assembly: 4 step(s)", out)
+        self.assertEqual((sorted(p.name for p in self.made["assembly_dir"].iterdir()), workbook.stat().st_mtime_ns), before)
+
+    def test_problems_are_listed_one_by_one(self):
+        (self.made["assembly_dir"] / "Assembly" / "3.png").unlink()
+        (self.made["part_images_folder"] / "P-002.png").unlink()
+        code, out, _ = self.check()
+        self.assertEqual(code, 1)
+        self.assertIn("NOT READY", out)
+        self.assertIn("P-002", out)
+        self.assertIn("Missing Assembly Images", out)
+
+    def test_unapproved_steps_fail_the_check_but_pass_as_a_draft(self):
+        page = make_docx(self.root / "page.docx", [("Tight w W1/2 P-001", png_bytes())])
+        self.run_cli("--import-onenote", str(page), "--assembly", SAMPLE_ASSEMBLY, "--replace", "--polish", *self.paths())
+        code, out, _ = self.check()
+        self.assertEqual(code, 1)
+        self.assertIn("not approved yet", out)
+        self.assertIn("Assembly status: 1 Ready", out)
+        code, out, _ = self.check("--draft")
+        self.assertEqual(code, 0, out)
+        self.assertIn("Ready to build a draft.", out)
+
+    def test_hard_steps_get_their_own_message(self):
+        page = make_docx(self.root / "page.docx", [("HARD route the cable", png_bytes())])
+        self.run_cli("--import-onenote", str(page), "--assembly", SAMPLE_ASSEMBLY, "--replace", "--polish", *self.paths())
+        _, out, _ = self.check()
+        self.assertIn("step 1 is marked HARD", out)
+
+    def test_a_short_template_and_a_missing_assembly_are_reported(self):
+        prs = Presentation(self.made["template_path"])
+        wig.delete_slide(prs, len(prs.slides) - 1)
+        prs.save(self.made["template_path"])
+        code, out, _ = self.run_cli("--check", "--assembly", SAMPLE_ASSEMBLY, "99-999-99", *self.paths())
+        self.assertEqual(code, 1)
+        self.assertIn("the slide layout expects at least 10", out)
+        self.assertIn("Missing assembly folder for 99-999-99", out)
+        self.assertIn("0 of 2 assemblies ready", out)
+
+    def test_existing_deck_is_named(self):
+        self.run_cli("--assembly", SAMPLE_ASSEMBLY, *self.paths(), *self.ANSWERS)
+        _, out, _ = self.check()
+        self.assertIn(f"Current deck: {SAMPLE_ASSEMBLY} REV A.pptx", out)
 
 
 class PdfTests(CliTestCase):

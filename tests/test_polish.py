@@ -380,6 +380,17 @@ class WorkbookTests(unittest.TestCase):
         row = self.rows("Packaging")[0]
         self.assertEqual((row[1], row[2]), ("Bag Bracket (P-004).", "Bag P-004"))
 
+    def test_tools_column_lists_each_tool_once_in_order_of_use(self):
+        wb = load_workbook(self.workbook)
+        wb["Assembly"].append([6, "Tight w W1/2 then PH2, then W1/2 again P-004", "Tight w W1/2 then PH2, then W1/2 again P-004"])
+        wb.save(self.workbook)
+        self.run_polish()
+        ws = load_workbook(self.workbook)["Assembly"]
+        self.assertEqual(ws.cell(row=1, column=8).value, "Tools")
+        self.assertEqual(ws.cell(row=2, column=8).value, '1/2" wrench (W1/2)')
+        self.assertEqual(ws.cell(row=7, column=8).value, '1/2" wrench (W1/2); #2 Phillips screwdriver (PH2)')
+        self.assertIsNone(ws.cell(row=3, column=8).value)       # no tool in "Insp for gaps NOPART"
+
     def test_a_backup_is_kept(self):
         report = self.run_polish()
         self.assertTrue(report.backup_path.exists())

@@ -316,6 +316,8 @@ class ProcessRow:
     """Stores one row from Assembly, Testing, or Packaging process sheets."""
     step_number: str
     description: str
+    # Tools the polish step found in the note, as written in column H ("1/2" wrench (W1/2)").
+    tools: List[str] = field(default_factory=list)
 
 @dataclass
 class WorkInstructionData:
@@ -371,16 +373,20 @@ def required_path(path: Path, description: str, errors: List[str], *, folder: bo
         kind = "folder" if folder else "file"
         errors.append(f"Missing {description}:\n  Expected {kind}: {path}")
 
+class ValidationFailed(FileNotFoundError):
+    """Raised with every validation problem at once; .errors keeps them as a list for --check."""
+    def __init__(self, errors: List[str]):
+        self.errors = list(errors)
+        super().__init__(
+            "The work instruction could not be created because validation failed.\n\n"
+            + "\n\n".join(self.errors)
+            + "\n\nFix the item(s) above and run the script again."
+        )
+
 def raise_validation_errors(errors: List[str]) -> None:
     """Stops generation and prints all validation errors together."""
-    if not errors:
-        return
-    message = "\n\n".join(errors)
-    raise FileNotFoundError(
-        "The work instruction could not be created because validation failed.\n\n"
-        f"{message}\n\n"
-        "Fix the item(s) above and run the script again."
-    )
+    if errors:
+        raise ValidationFailed(errors)
 
 def normalize_header(value) -> str:
     """Reduces a header cell to letters and digits only for loose comparison."""
@@ -649,6 +655,21 @@ def read_equipment(wb) -> Tuple[List[str], List[str]]:
             tools.append(values[TOOLS_COL])
     return materials, tools
 
+def tool_key(entry: str) -> str:
+    """Compares tools by name, so '1/2" wrench' on the Equipment sheet matches '1/2" wrench (W1/2)'."""
+    return re.sub(r"\s*\([^()]*\)\s*$", "", entry).strip().lower()
+
+def merge_tool_lists(from_steps: List[str], from_equipment_sheet: List[str]) -> List[str]:
+    """Tools the steps use, in order of first use, then any extra ones typed on the Equipment sheet."""
+    merged: List[str] = []
+    seen = set()
+    for entry in list(from_steps) + list(from_equipment_sheet):
+        key = tool_key(entry)
+        if key and key not in seen:
+            seen.add(key)
+            merged.append(entry)
+    return merged
+
 def read_process_sheet(
     wb,
     spec: SectionSpec,
@@ -668,6 +689,7 @@ def read_process_sheet(
     # A sheet that went through `wig --polish` has a Status column (D). Every step on
     # it must then be Approved by a person before a real deck is built.
     has_status = normalize_header(ws.cell(row=1, column=STATUS_COLUMN).value) == "STATUS"
+    has_tools = normalize_header(ws.cell(row=1, column=TOOLS_COLUMN).value) == "TOOLS"
     unapproved: List[str] = []
 
     for row, values in iter_sheet_rows(ws, cols):
@@ -683,6 +705,12 @@ def read_process_sheet(
             (STEP_NUMBER_COL, step_number),
             (STEP_DESCRIPTION_COL, description),
         ))
+        if blank_field == STEP_DESCRIPTION_COL and status.upper() == "HARD":
+            errors.append(
+                f"Sheet '{spec.sheet}', row {row}: step {step_number} is marked HARD. "
+                "Write its Description, then set its Status to Approved."
+            )
+            continue
         if blank_field:
             step_reference = f" for step {step_number}" if step_number else ""
             errors.append(
@@ -692,7 +720,10 @@ def read_process_sheet(
 
         if not section_image_path(spec, assembly_number, step_number).exists():
             missing_step_images.append(step_number)
-        rows.append(ProcessRow(step_number=step_number, description=description))
+        tools = []
+        if has_tools:
+            tools = [t.strip() for t in clean_cell(ws.cell(row=row, column=TOOLS_COLUMN).value).split(";") if t.strip()]
+        rows.append(ProcessRow(step_number=step_number, description=description, tools=tools))
 
     if spec.required and not rows:
         errors.append(f"Sheet '{spec.sheet}' has no valid rows.")
@@ -709,6 +740,7 @@ def read_process_sheet(
     return rows
 
 STATUS_COLUMN = 4
+TOOLS_COLUMN = 8
 HARD_PLACEHOLDER = "[HARD: description still to be written]"
 
 def require_section_folder(spec: SectionSpec, assembly_number: str, errors: List[str]) -> None:
@@ -768,6 +800,10 @@ def read_and_validate_data(
         if not spec.required and process_steps[spec.sheet]:
             require_section_folder(spec, assembly_number, errors)
     raise_validation_errors(errors)
+    tools = merge_tool_lists(
+        [tool for spec in PROCESS_SECTIONS for row in process_steps[spec.sheet] for tool in row.tools],
+        tools,
+    )
 
     return WorkInstructionData(
         assembly_number=assembly_number,
@@ -1169,8 +1205,18 @@ def populate_equipment_slide(slide, materials: List[str], tools: List[str]) -> N
         ("Materials", materials, (0.90, 1.55, 3.85, 4.65)),
         ("Tools", tools, (5.10, 1.55, 3.85, 4.65)),
     ):
-        body = "\n".join(f"- {item}" for item in items) if items else "- N/A"
-        add_bordered_box(slide, f"{heading}\n{body}", box, font_size=16)
+        body = "\n".join(f"- {item[:1].upper()}{item[1:]}" for item in items) if items else "- N/A"
+        add_bordered_box(slide, f"{heading}\n{body}", box, font_size=equipment_font_size(len(items)))
+
+def equipment_font_size(item_count: int) -> int:
+    """Shrinks the materials/tools text as the list grows, so a long tool list still fits its box."""
+    for limit, size in EQUIPMENT_FONT_STEPS:
+        if item_count <= limit:
+            return size
+    return EQUIPMENT_FONT_STEPS[-1][1]
+
+# (most items, font size): 16 pt holds about 14 lines in the 4.65-inch boxes.
+EQUIPMENT_FONT_STEPS = [(13, 16), (17, 13), (22, 11), (10_000, 9)]
 
 def boxes_share_a_column(first, second) -> bool:
     """Reports whether two boxes overlap horizontally, so one can sit under the other."""
@@ -1392,18 +1438,24 @@ def save_presentation(prs: Presentation, output_path: Path) -> None:
             "Make sure the PowerPoint is not open and that you have permission to save here."
         )
 
-def build_work_instruction(data: WorkInstructionData, items_per_slide: int) -> Tuple[Path, ArchiveResult]:
-    """Builds and saves the complete work instruction PowerPoint."""
-    prs = Presentation(TEMPLATE_PATH)
+def template_slide_count_problem(prs: Presentation) -> Optional[str]:
     last_needed = max([TITLE_SLIDE_INDEX, REVISION_LOG_SLIDE_INDEX, WELDING_SLIDE_INDEX,
                        PARTS_TEMPLATE_SLIDE_INDEX, EQUIPMENT_SLIDE_INDEX,
                        *(spec.template_index for spec in PROCESS_SECTIONS)])
     if len(prs.slides) <= last_needed:
-        raise ValueError(
+        return (
             f"The template has {len(prs.slides)} slides, but the slide layout expects at least {last_needed + 1}.\n"
             f"Template: {TEMPLATE_PATH}\n"
             "Check the slide order in the README, or pass --config with your template's slide positions."
         )
+    return None
+
+def build_work_instruction(data: WorkInstructionData, items_per_slide: int) -> Tuple[Path, ArchiveResult]:
+    """Builds and saves the complete work instruction PowerPoint."""
+    prs = Presentation(TEMPLATE_PATH)
+    problem = template_slide_count_problem(prs)
+    if problem:
+        raise ValueError(problem)
     welding_slide_id = prs.slides[WELDING_SLIDE_INDEX].slide_id
     populate_title_slide(prs.slides[TITLE_SLIDE_INDEX], data)
     populate_revision_log_slide(prs.slides[REVISION_LOG_SLIDE_INDEX], data)
@@ -1702,6 +1754,9 @@ def build_parser() -> argparse.ArgumentParser:
                        help="One or more assembly numbers, for example 12-345-67. Several numbers build in one run.")
     where.add_argument("--assembly-file", metavar="FILE",
                        help="Text file with one assembly number per line. Blank lines and lines starting with # are skipped.")
+    where.add_argument("--check", action="store_true",
+                       help="Check that each --assembly is ready to build (workbook, photos, template, approvals) "
+                            "without building or changing anything. Exits 1 if anything would stop a build.")
     where.add_argument("--init", metavar="DIR",
                        help="Create an empty project skeleton in DIR (folders, starter template, blank workbook) and exit.")
     where.add_argument("--sample", action="store_true",
@@ -1846,6 +1901,82 @@ def collect_answers(args: argparse.Namespace) -> Answers:
         is_revision, new_revision, change = get_release_inputs()
     return Answers(initials, uses_welding, items_per_slide, is_revision, new_revision, change)
 
+def check_one(assembly_number: str) -> bool:
+    """Prints a readiness report for one assembly. Reads only: builds and writes nothing."""
+    problems: List[str] = []
+    notes: List[str] = []
+    print(f"\nChecking {assembly_number}{' (as a draft)' if ALLOW_DRAFT else ''}")
+
+    problems += check_assembly_setup(assembly_number)
+    if not TEMPLATE_PATH.is_file():
+        problems.append(f"Missing PowerPoint template:\n  Expected file: {TEMPLATE_PATH}")
+    else:
+        try:
+            problem = template_slide_count_problem(Presentation(TEMPLATE_PATH))
+        except Exception as exc:   # python-pptx raises several types for a damaged file
+            problem = f"The template could not be opened: {exc}\n  {TEMPLATE_PATH}"
+        if problem:
+            problems.append(problem)
+
+    data = None
+    if not problems:
+        try:
+            data = read_and_validate_data(assembly_number, "CHECK", False, "check", False, None)
+        except ValidationFailed as exc:
+            problems += exc.errors     # the build's own checks, one problem each
+        except (ValueError, OSError) as exc:
+            problems.append(str(exc))
+
+    if data is not None:
+        notes.append(f"{len(data.parts)} part(s), {len(data.materials)} material(s), {len(data.tools)} tool(s)")
+        for spec in PROCESS_SECTIONS:
+            steps = data.steps_for(spec)
+            if steps:
+                notes.append(f"{spec.sheet}: {len(steps)} step(s)")
+    notes += approval_summary(assembly_number)
+    current = find_existing_wi(assembly_number) if assembly_base_folder(assembly_number).is_dir() else None
+    notes.append(f"Current deck: {current.name}" if current else "No deck built yet (next build is an initial release).")
+
+    for note in notes:
+        print(f"  {note}")
+    if problems:
+        print(f"  NOT READY: {len(problems)} problem(s):")
+        for problem in problems:
+            print("    - " + problem.replace("\n", "\n      "))
+        return False
+    print("  Ready to build" + (" a draft." if ALLOW_DRAFT else "."))
+    return True
+
+def approval_summary(assembly_number: str) -> List[str]:
+    """Counts polish statuses per step sheet, e.g. 'Assembly status: 6 Approved, 2 Flagged'."""
+    path = assembly_excel_path(assembly_number)
+    if not path.is_file():
+        return []
+    try:
+        wb = load_workbook(path, read_only=True, data_only=True)
+    except Exception:
+        return []
+    lines = []
+    try:
+        for spec in PROCESS_SECTIONS:
+            if spec.sheet not in wb.sheetnames:
+                continue
+            ws = wb[spec.sheet]
+            header = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())
+            if len(header) < STATUS_COLUMN or normalize_header(header[STATUS_COLUMN - 1]) != "STATUS":
+                continue
+            counts: Dict[str, int] = {}
+            for row in ws.iter_rows(min_row=2, values_only=True):
+                if not row or not any(clean_cell(v) for v in row[:3]):
+                    continue
+                status = clean_cell(row[STATUS_COLUMN - 1] if len(row) >= STATUS_COLUMN else None) or "No status"
+                counts[status] = counts.get(status, 0) + 1
+            if counts:
+                lines.append(f"{spec.sheet} status: " + ", ".join(f"{n} {s}" for s, n in sorted(counts.items())))
+    finally:
+        wb.close()
+    return lines
+
 def check_assembly_setup(assembly_number: str) -> List[str]:
     """Returns setup problems for one assembly (empty when it is ready to build)."""
     errors: List[str] = []
@@ -1965,6 +2096,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             for number in assemblies:
                 polish_assembly(number)
             return 0
+        if args.check:
+            results = [check_one(number) for number in assemblies]
+            if len(assemblies) > 1:
+                ready_count = sum(results)
+                print(f"\n{ready_count} of {len(assemblies)} assemblies ready.")
+            return 0 if all(results) else 1
         if args.pdf and find_soffice() is None:
             raise ValueError("--pdf needs LibreOffice, and it was not found. Install it or set SOFFICE_BIN.")
 

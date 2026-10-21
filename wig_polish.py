@@ -15,7 +15,7 @@ Markers you can type in a note:
             number is not flagged.
 
 Each process sheet (Assembly, Testing, Packaging) uses these columns:
-    A Step #   B Description   C Raw note   D Status   E Flags   F Draft   G Source note
+    A Step #   B Description   C Raw note   D Status   E Flags   F Draft   G Source note   H Tools
 Status is Flagged, Ready (nothing flagged, waiting for your approval), HARD, or
 Approved, which only you set. The generator refuses to build a sheet that has
 a Status column until every step on it is Approved (or you build a --draft).
@@ -39,8 +39,11 @@ from wig_glossary import BASE_WORDS, Glossary
 
 SECTIONS = ("Assembly", "Testing", "Packaging")
 STATUS_FLAGGED, STATUS_READY, STATUS_HARD, STATUS_APPROVED = "Flagged", "Ready", "HARD", "Approved"
-HEADERS = {3: "Raw note", 4: "Status", 5: "Flags", 6: "Draft", 7: "Source note"}
-COL_STEP, COL_DESC, COL_RAW, COL_STATUS, COL_FLAGS, COL_DRAFT, COL_SOURCE = 1, 2, 3, 4, 5, 6, 7
+HEADERS = {3: "Raw note", 4: "Status", 5: "Flags", 6: "Draft", 7: "Source note", 8: "Tools"}
+COL_STEP, COL_DESC, COL_RAW, COL_STATUS, COL_FLAGS, COL_DRAFT, COL_SOURCE, COL_TOOLS = 1, 2, 3, 4, 5, 6, 7, 8
+# Tools column: the tool codes a step used, written "1/2" wrench (W1/2); ...". The generator
+# lists them on the equipment page, so it needs no glossary at build time.
+TOOL_SEPARATOR = "; "
 TO_RESOLVE_SHEET = "To Resolve"
 PART_PLACEHOLDER = "[part number needed]"
 
@@ -346,6 +349,16 @@ def polish_note(raw: str, glossary: Glossary, parts: List[Part], vocab: Set[str]
     )
 
 
+def tool_list(codes: Iterable[str], glossary: Glossary) -> str:
+    """'1/2" wrench (W1/2); #2 Phillips screwdriver (PH2)': each tool once, in order of use."""
+    entries = []
+    for code in dict.fromkeys(codes):
+        tool = glossary.tools.get(code.lower())
+        if tool is not None:
+            entries.append(f"{tool.name} ({tool.code})")
+    return TOOL_SEPARATOR.join(entries)
+
+
 # -----------------------------------------------------------------------------
 # Workbook pass
 # -----------------------------------------------------------------------------
@@ -509,6 +522,7 @@ def polish_workbook(
             cell(COL_FLAGS).value = " ".join(flags) or None
             cell(COL_DRAFT).value = result.draft or None
             cell(COL_SOURCE).value = raw
+            cell(COL_TOOLS).value = tool_list(result.tools_used, glossary) or None
             report.counts[new_status] += 1
             if new_status in (STATUS_FLAGGED, STATUS_HARD):
                 report.to_resolve.append((name, int(step) if step.isdigit() else step, raw, new_status, " ".join(flags)))
