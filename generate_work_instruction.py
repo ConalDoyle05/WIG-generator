@@ -85,10 +85,13 @@ from PIL import Image
 from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE, MSO_SHAPE_TYPE
-from pptx.enum.text import PP_ALIGN
+from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 from pptx.util import Inches, Pt
 
+import hashlib
+
 import wig_images
+import wig_revision
 import wig_time
 
 # =============================================================================
@@ -347,6 +350,8 @@ class WorkInstructionData:
     is_draft: bool = False
     # ASSEMBLY TIME as typed on Title Info (blank when it was added up from the step times).
     typed_assembly_time: str = ""
+    # What changed since the previous deck, filled in while building (printed afterwards).
+    revision_notes: List[str] = field(default_factory=list)
 
     def steps_for(self, spec: SectionSpec) -> List[ProcessRow]:
         """Returns the step rows read for one process section."""
@@ -1227,6 +1232,40 @@ def add_step_badge(slide, step_number: str, picture, items_per_slide: int) -> No
         run.font.bold = True
         run.font.color.rgb = RGBColor(255, 255, 255)
 
+# Revision marks: a triangle with the new revision on each changed or added step photo
+# and part card, the usual way a controlled document points at what changed.
+REVISION_MARK_NAME = "WIG Revision Mark"
+REVISION_MARK_SIZE = 0.40
+PART_REVISION_MARK_SIZE = 0.28   # part photos are under an inch square
+REVISION_MARK_INSET = 0.05
+# (section, step number) -> mark, and ("Parts", part key) -> mark, for the deck being built.
+REVISION_MARKS: Dict[Tuple[str, str], str] = {}
+
+def add_revision_mark(slide, label: str, picture, size_inches: float = REVISION_MARK_SIZE) -> None:
+    """Draws a yellow triangle with the revision on the top-right corner of a photo."""
+    size = Inches(size_inches)
+    mark = slide.shapes.add_shape(
+        MSO_SHAPE.ISOSCELES_TRIANGLE,
+        picture.left + picture.width - size - Inches(REVISION_MARK_INSET),
+        picture.top + Inches(REVISION_MARK_INSET),
+        size, size,
+    )
+    mark.name = f"{REVISION_MARK_NAME} {label}"
+    mark.fill.solid()
+    mark.fill.fore_color.rgb = RGBColor(255, 210, 0)
+    mark.line.color.rgb = RGBColor(0, 0, 0)
+    mark.line.width = Pt(1.25)
+    frame = mark.text_frame
+    frame.margin_left = frame.margin_right = frame.margin_bottom = frame.margin_top = 0
+    frame.vertical_anchor = MSO_ANCHOR.BOTTOM
+    frame.text = label
+    paragraph = frame.paragraphs[0]
+    paragraph.alignment = PP_ALIGN.CENTER
+    for run in paragraph.runs:
+        run.font.size = Pt(9 if len(label) <= 2 else 7)
+        run.font.bold = True
+        run.font.color.rgb = RGBColor(0, 0, 0)
+
 def add_picture_fit(slide, image_path: Path, x: float, y: float, w: float, h: float):
     """Adds an image centered inside a target box while preserving aspect ratio.
 
@@ -1288,7 +1327,7 @@ SLIDE_NUMBER_MIN_TOP = 6.50
 
 def is_slide_number_shape(shape) -> bool:
     """Reports whether a shape looks like the template's slide-number placeholder."""
-    if not shape.has_text_frame or shape.name.startswith(STEP_BADGE_NAME):
+    if not shape.has_text_frame or shape.name.startswith((STEP_BADGE_NAME, REVISION_MARK_NAME)):
         return False
     text = shape.text.strip()
     return text.isdigit() and len(text) <= 3
@@ -1424,7 +1463,10 @@ def populate_parts_slide(slide, parts: List[PartRow], slide_number_label: str) -
     set_parts_title(slide, f"Parts List - {slide_number_label}")
     for index, part in enumerate(parts[:PARTS_PER_SLIDE]):
         x, y = PART_CARD_POSITIONS[index]
-        add_picture_fit(slide, catalog_image_path(part.part_number), x, y, PART_IMAGE_W, PART_IMAGE_H)
+        picture = add_picture_fit(slide, catalog_image_path(part.part_number), x, y, PART_IMAGE_W, PART_IMAGE_H)
+        mark = REVISION_MARKS.get(("Parts", wig_revision.part_key(part.part_number)))
+        if mark:
+            add_revision_mark(slide, mark, picture, size_inches=PART_REVISION_MARK_SIZE)
         add_bordered_box(
             slide,
             f"{part.part_number}  |  QTY: {part.quantity}\n{part.part_name}",
@@ -1532,6 +1574,8 @@ def populate_process_slide(
             *image_box,
         )
         add_step_badge(slide, item.step_number, picture, items_per_slide)
+        if (spec.sheet, item.step_number) in REVISION_MARKS:
+            add_revision_mark(slide, REVISION_MARKS[(spec.sheet, item.step_number)], picture)
         box = adjust_description_box(desc_box, item.description, description_bottom_limit(layout_boxes, index))
         level, text = split_callout(item.description)
         if level:
@@ -1656,6 +1700,13 @@ def archive_superseded_work_instructions(assembly_number: str, current_output: P
             result.failed.append((path, str(error)))
         else:
             result.moved.append(destination)
+            # The deck's revision record goes with it, under the matching name.
+            record = wig_revision.manifest_path(path)
+            if record.exists():
+                try:
+                    shutil.move(str(record), str(wig_revision.manifest_path(destination)))
+                except OSError:
+                    pass
     return result
 
 def save_presentation(prs: Presentation, output_path: Path) -> None:
@@ -1692,6 +1743,27 @@ def build_work_instruction(data: WorkInstructionData, items_per_slide: int) -> T
     if problem:
         raise ValueError(problem)
     welding_slide_id = prs.slides[WELDING_SLIDE_INDEX].slide_id
+    current_record = build_manifest(data)
+    changes = prepare_revision_changes(data, current_record)
+    REVISION_MARKS.clear()
+    if changes is not None:
+        label = data.title_info["REV #"]
+        REVISION_MARKS.update({key: label for key in changes.marks})
+        REVISION_MARKS.update({("Parts", key): label for key in changes.part_marks})
+    try:
+        output_path, archive = _build_deck(prs, data, items_per_slide, welding_slide_id)
+    finally:
+        REVISION_MARKS.clear()
+    if not data.is_draft:
+        if changes is not None:
+            current_record["changes_since"] = changes.previous_revision
+            current_record["changes"] = changes.lines
+        wig_revision.save_manifest(wig_revision.manifest_path(output_path), current_record)
+    return output_path, archive
+
+def _build_deck(prs: Presentation, data: WorkInstructionData, items_per_slide: int,
+                welding_slide_id) -> Tuple[Path, ArchiveResult]:
+    """Fills every slide and saves the deck. build_work_instruction wraps this with the revision record."""
     populate_title_slide(prs.slides[TITLE_SLIDE_INDEX], data)
     populate_revision_log_slide(prs.slides[REVISION_LOG_SLIDE_INDEX], data)
 
@@ -1752,6 +1824,79 @@ def build_work_instruction(data: WorkInstructionData, items_per_slide: int) -> T
     if data.is_revision:
         archive = archive_superseded_work_instructions(data.assembly_number, output_path)
     return output_path, archive
+
+def step_photo_fingerprint(path: Path) -> Optional[str]:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+def build_manifest(data: WorkInstructionData) -> dict:
+    """The record saved next to a deck: enough to tell what the next revision changed."""
+    sections = {}
+    for spec in PROCESS_SECTIONS:
+        steps = data.steps_for(spec)
+        if steps:
+            sections[spec.sheet] = [
+                {
+                    "step": row.step_number,
+                    "description": row.description,
+                    "photo": step_photo_fingerprint(section_image_path(spec, data.assembly_number, row.step_number)),
+                    "seconds": row.seconds,
+                }
+                for row in steps
+            ]
+    return {
+        "format": wig_revision.FORMAT_VERSION,
+        "assembly": data.assembly_number,
+        "revision": data.title_info["REV #"],
+        "built": data.title_info.get("DATE", ""),
+        "title": data.title_info.get("WI Title", ""),
+        "sections": sections,
+        "parts": [{"number": p.part_number, "bomname": p.bomname, "quantity": p.quantity, "name": p.part_name}
+                  for p in data.parts],
+        "materials": list(data.materials),
+        "tools": list(data.tools),
+    }
+
+def previous_record(assembly_number: str) -> Tuple[Optional[Path], Optional[dict]]:
+    """The current (latest real) deck and its revision record, if any."""
+    deck = find_existing_wi(assembly_number) if assembly_base_folder(assembly_number).is_dir() else None
+    if deck is None:
+        return None, None
+    return deck, wig_revision.load_manifest(wig_revision.manifest_path(deck))
+
+def prepare_revision_changes(data: WorkInstructionData, current_record: dict) -> Optional["wig_revision.Changes"]:
+    """Compares with the previous deck for a revision or a draft, and resolves --change-description auto."""
+    wants_auto = data.change_description.strip().lower() == "auto"
+    if not (data.is_revision or data.is_draft):
+        if wants_auto:
+            raise ValueError("--change-description auto only applies to a revision.")
+        return None
+    deck, record = previous_record(data.assembly_number)
+    if deck is None:
+        if wants_auto and data.is_revision:
+            raise ValueError("--change-description auto needs a previous deck to compare with, and none was found.")
+        return None
+    if record is None:
+        data.revision_notes.append(
+            f"No revision record for {deck.name} (it was built before revision tracking), so changes since it "
+            "can't be marked. This build saves one, so the next revision will be."
+        )
+        if wants_auto:
+            raise ValueError(f"--change-description auto needs the revision record of {deck.name}, which doesn't "
+                             "exist. Type a change description instead.")
+        return None
+    changes = wig_revision.compare(record, current_record)
+    if wants_auto:
+        data.change_description = changes.compact_text()
+    if changes.any:
+        marked = len(changes.marks) + len(changes.part_marks)
+        data.revision_notes.append(f"Changes since REV {changes.previous_revision} ({marked} marked in the deck):")
+        data.revision_notes += [f"  {line}" for line in changes.lines]
+    else:
+        data.revision_notes.append(f"No changes to steps, parts, materials or tools since REV {changes.previous_revision}.")
+    return changes
 
 def add_draft_watermark(prs: Presentation) -> None:
     """Puts a red DRAFT notice in the footer of every slide."""
@@ -2177,6 +2322,7 @@ def check_one(assembly_number: str) -> bool:
                 notes.append(f"{spec.sheet}: {len(steps)} step(s)")
         notes += step_time_notes(data, data.typed_assembly_time)
         notes += bom_cross_check(data)
+        notes += revision_preview(data)
         callouts = [f"{spec.sheet} {row.step_number} ({split_callout(row.description)[0]})"
                     for spec in PROCESS_SECTIONS for row in data.steps_for(spec) if split_callout(row.description)[0]]
         if callouts:
@@ -2194,6 +2340,18 @@ def check_one(assembly_number: str) -> bool:
         return False
     print("  Ready to build" + (" a draft." if ALLOW_DRAFT else "."))
     return True
+
+def revision_preview(data: WorkInstructionData) -> List[str]:
+    """For --check: what a revision built now would mark, compared with the current deck."""
+    deck, record = previous_record(data.assembly_number)
+    if deck is None:
+        return []
+    if record is None:
+        return [f"No revision record for {deck.name}, so a revision can't mark what changed."]
+    changes = wig_revision.compare(record, build_manifest(data))
+    if not changes.any:
+        return [f"No changes since REV {changes.previous_revision}."]
+    return [f"Changes since REV {changes.previous_revision} (a revision would mark them):"] + [f"  {line}" for line in changes.lines]
 
 def approval_summary(assembly_number: str) -> List[str]:
     """Counts polish statuses per step sheet, e.g. 'Assembly status: 6 Approved, 2 Flagged'."""
@@ -2248,7 +2406,7 @@ def build_one(assembly_number: str, answers: Answers, make_pdf: bool) -> None:
 
     print("\nWork instruction created successfully.")
     print(f"Output file: {output_path}")
-    for note in step_time_notes(data, data.typed_assembly_time) + bom_cross_check(data):
+    for note in data.revision_notes + step_time_notes(data, data.typed_assembly_time) + bom_cross_check(data):
         print(note)
     report_archive(archive)
     print(f"Parts read: {len(data.parts)}")

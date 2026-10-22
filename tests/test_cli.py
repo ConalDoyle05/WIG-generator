@@ -387,7 +387,8 @@ class PolishCliTests(PolishHelpers):
                                       "N", "--steps-per-slide", "4", "--revision", "B", "--change-description", "x")
         self.assertEqual(code, 0, err)
         cancelled = self.deck().parent / "CANCELLED"
-        self.assertEqual(sorted(p.name for p in cancelled.iterdir()), [f"{SAMPLE_ASSEMBLY} REV A.pptx"])
+        self.assertEqual(sorted(p.name for p in cancelled.iterdir()),
+                         [f"{SAMPLE_ASSEMBLY} REV A.pptx", f"{SAMPLE_ASSEMBLY} REV A.wig.json"])
         self.assertTrue(self.deck().with_name(f"{SAMPLE_ASSEMBLY} REV A DRAFT.pptx").exists())
 
     def test_reimport_keeps_approvals_for_unchanged_notes(self):

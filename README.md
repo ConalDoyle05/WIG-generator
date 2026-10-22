@@ -12,7 +12,7 @@ folder always holds exactly one current instruction.
 
 *Demo output: made-up parts and plain placeholder pictures, so it shows the layout, not a finished deck.*
 
-**Status:** working prototype. 206 automated tests (unit tests, end-to-end builds against synthetic
+**Status:** working prototype. 226 automated tests (unit tests, end-to-end builds against synthetic
 templates, and the command line); a GitHub Actions workflow runs them on Linux and Windows
 (Python 3.9, 3.12, 3.13). Every bug found so far is listed in
 [Bugs fixed](#bugs-fixed), each with a regression test. It has only been run on synthetic data, not on
@@ -266,6 +266,30 @@ in it. The column is found by its header, so any position works.
 - **From OneNote:** add a third column to your table holding just the time (`45 s`, `1m 30s`, `1:30`).
   `--import-onenote` puts it in the Time column, as text so Excel can't reinterpret it, and keeps it out
   of the note. A time you typed into the workbook survives a re-import of an unchanged note.
+
+### Revision tracking
+
+Every real build saves a small record next to its deck, `12-345-67 REV A.wig.json`, holding each step's
+text, a fingerprint of its photo and its time, plus the parts, materials and tools. When a revision
+replaces the deck, the record moves to `CANCELLED` with it.
+
+When you build the next revision, WIG compares it with that record:
+
+- A **yellow triangle with the new revision** (B, D.2...) goes on the photo of every step whose text or
+  photo changed or that is new, and on the card of every part that is new or whose quantity or name
+  changed.
+- The build prints exactly what changed: `Assembly 2: text changed`, `Assembly 4: photo changed`,
+  `Assembly 5: added`, `Part P-001: quantity 4 → 6`, removed steps and parts, and changed materials
+  and tools. The same list is saved in the new record.
+- A step that only **moved** (because one was inserted before it) is listed, not marked, since its
+  content didn't change. Swapping two steps counts as two moves.
+- `--change-description auto` writes a short summary into the revision log for you, for example
+  `Assembly 2, 4 changed; parts P-001 qty`.
+- `--check` previews what a revision built now would mark, and a `--draft` revision shows the marks
+  without saving a record.
+
+A deck built before revision tracking has no record. Its next revision says changes can't be marked,
+and saves a record so the one after can be.
 
 ### BOM cross-check
 
