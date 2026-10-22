@@ -1074,6 +1074,48 @@ def add_textbox(
 # Standard border weight for the red content boxes used on every content slide.
 CONTENT_BORDER_WEIGHT = 3
 
+# Safety callouts. A step whose text starts with one of these words and a colon
+# ("CAUTION: Surface is hot.") is drawn as a coloured banner in the ANSI Z535
+# colours: (fill, text colour). The colon is required, so "Note the orientation"
+# stays an ordinary step.
+CALLOUT_STYLES = {
+    "DANGER": (RGBColor(200, 16, 46), RGBColor(255, 255, 255)),
+    "WARNING": (RGBColor(255, 121, 0), RGBColor(0, 0, 0)),
+    "CAUTION": (RGBColor(255, 210, 0), RGBColor(0, 0, 0)),
+    "NOTE": (RGBColor(0, 87, 184), RGBColor(255, 255, 255)),
+}
+CALLOUT_RE = re.compile(r"^\s*(" + "|".join(CALLOUT_STYLES) + r")\s*[:\-]\s*(.+)$", re.IGNORECASE | re.DOTALL)
+CALLOUT_NAME = "WIG Callout"
+
+def split_callout(description: str) -> Tuple[Optional[str], str]:
+    """('CAUTION', 'Surface is hot.') for a callout step, (None, description) otherwise."""
+    match = CALLOUT_RE.match(description or "")
+    if not match:
+        return None, description
+    text = match.group(2).strip()
+    return match.group(1).upper(), text[:1].upper() + text[1:]
+
+def add_callout_box(slide, level: str, text: str, box: Tuple[float, float, float, float], font_size: int) -> None:
+    """A step description drawn as a filled safety banner: bold 'CAUTION:' label, then the text."""
+    fill, ink = CALLOUT_STYLES[level]
+    shape = slide.shapes.add_textbox(*(Inches(v) for v in box))
+    shape.name = f"{CALLOUT_NAME} {level}"
+    shape.fill.solid()
+    shape.fill.fore_color.rgb = fill
+    shape.line.color.rgb = RGBColor(0, 0, 0)
+    shape.line.width = Pt(CONTENT_BORDER_WEIGHT)
+    frame = shape.text_frame
+    frame.clear()
+    frame.word_wrap = True
+    paragraph = frame.paragraphs[0]
+    paragraph.alignment = PP_ALIGN.CENTER
+    for words, size_step in ((f"{level}: ", 1), (text, 0)):
+        run = paragraph.add_run()
+        run.text = words
+        run.font.size = Pt(font_size + size_step)
+        run.font.bold = True
+        run.font.color.rgb = ink
+
 def add_bordered_box(slide, text: str, box: Tuple[float, float, float, float],
                      font_size: int, bold: bool = False) -> None:
     """Adds the standard centered, red-bordered content box used on content slides."""
@@ -1427,17 +1469,12 @@ def populate_process_slide(
             *image_box,
         )
         add_step_badge(slide, item.step_number, picture, items_per_slide)
-        add_bordered_box(
-            slide,
-            item.description,
-            adjust_description_box(
-                desc_box,
-                item.description,
-                description_bottom_limit(layout_boxes, index),
-            ),
-            font_size=desc_font_size,
-            bold=True,
-        )
+        box = adjust_description_box(desc_box, item.description, description_bottom_limit(layout_boxes, index))
+        level, text = split_callout(item.description)
+        if level:
+            add_callout_box(slide, level, text, box, font_size=desc_font_size)
+        else:
+            add_bordered_box(slide, item.description, box, font_size=desc_font_size, bold=True)
 
 # =============================================================================
 # 10. DECK BUILDING LOGIC
@@ -2076,6 +2113,10 @@ def check_one(assembly_number: str) -> bool:
             if steps:
                 notes.append(f"{spec.sheet}: {len(steps)} step(s)")
         notes += step_time_notes(data, data.typed_assembly_time)
+        callouts = [f"{spec.sheet} {row.step_number} ({split_callout(row.description)[0]})"
+                    for spec in PROCESS_SECTIONS for row in data.steps_for(spec) if split_callout(row.description)[0]]
+        if callouts:
+            notes.append("Safety callouts: " + ", ".join(callouts))
     notes += approval_summary(assembly_number)
     current = find_existing_wi(assembly_number) if assembly_base_folder(assembly_number).is_dir() else None
     notes.append(f"Current deck: {current.name}" if current else "No deck built yet (next build is an initial release).")

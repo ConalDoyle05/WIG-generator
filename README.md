@@ -12,7 +12,7 @@ folder always holds exactly one current instruction.
 
 *Demo output: made-up parts and plain placeholder pictures, so it shows the layout, not a finished deck.*
 
-**Status:** working prototype. 191 automated tests (unit tests, end-to-end builds against synthetic
+**Status:** working prototype. 197 automated tests (unit tests, end-to-end builds against synthetic
 templates, and the command line); a GitHub Actions workflow runs them on Linux and Windows
 (Python 3.9, 3.12, 3.13). Every bug found so far is listed in
 [Bugs fixed](#bugs-fixed), each with a regression test. It has only been run on synthetic data, not on
@@ -266,6 +266,21 @@ in it. The column is found by its header, so any position works.
 - **From OneNote:** add a third column to your table holding just the time (`45 s`, `1m 30s`, `1:30`).
   `--import-onenote` puts it in the Time column, as text so Excel can't reinterpret it, and keeps it out
   of the note. A time you typed into the workbook survives a re-import of an unchanged note.
+
+### Safety callouts
+
+Start a step's text with **DANGER:**, **WARNING:**, **CAUTION:** or **NOTE:**, and its description box
+becomes a coloured banner with the label in bold: red, orange, yellow or blue, the ANSI Z535 safety
+colours. The layout is unchanged, so it fits every grid.
+
+```text
+CAUTION: Glue gun nozzle is hot.
+WARNING: Pinch point between the bracket and the base plate.
+```
+
+Case doesn't matter, so a polished note that reads `Caution: ...` works too. The colon is required, so
+"Note the orientation..." stays an ordinary step. `--check` lists every step that carries a callout.
+The polish step already flags notes containing safety words such as "caution" for review.
 
 ### Footer on every page
 
