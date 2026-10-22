@@ -325,6 +325,8 @@ class ProcessRow:
     tools: List[str] = field(default_factory=list)
     # Seconds from the Time column, if the sheet has one and this step was timed.
     seconds: Optional[float] = None
+    # The floor note from column C, on sheets that went through the import or polish step.
+    raw_note: str = ""
 
 @dataclass
 class WorkInstructionData:
@@ -734,6 +736,63 @@ def step_time_notes(data: "WorkInstructionData", typed_time: str) -> List[str]:
                              "have read it as 1 hour 30 minutes. Type it as 1m 30s instead.")
     return notes
 
+_DASHES = str.maketrans({"\u2013": "-", "\u2014": "-", "\u2011": "-", "\u2012": "-", "\u2212": "-"})
+
+def _part_key(text: str) -> str:
+    return clean_cell(text).translate(_DASHES).upper().replace(" ", "")
+
+def part_number_pattern() -> re.Pattern:
+    """What 'looks like a part number': the glossary's setting if there is a glossary, else the default."""
+    import wig_glossary
+    path = glossary_path()
+    if path.is_file():
+        try:
+            return wig_glossary.load_glossary(path).part_number_re
+        except ValueError:
+            pass   # a broken glossary is reported by --polish / --glossary-check, not here
+    return re.compile(wig_glossary.DEFAULT_SETTINGS["part_number_pattern"])
+
+def bom_cross_check(data: "WorkInstructionData") -> List[str]:
+    """Compares the Parts sheet with the steps. Warnings only: a build never fails on these.
+
+    A part counts as used when a step's text or floor note contains its part number
+    (ignoring case and dash style). Names aren't matched: "screw" is too generic.
+    """
+    parts = {_part_key(p.part_number): p for p in data.parts if p.part_number}
+    steps = [(spec.sheet, row) for spec in PROCESS_SECTIONS for row in data.steps_for(spec)]
+    texts = [(sheet, row, f"{row.description} {row.raw_note}".translate(_DASHES)) for sheet, row in steps]
+
+    used = set()
+    for key in parts:
+        word = re.compile(rf"(?<![A-Za-z0-9-]){re.escape(key)}(?![A-Za-z0-9-])", re.IGNORECASE)
+        if any(word.search(text) for _, _, text in texts):
+            used.add(key)
+
+    known = set(parts) | {_part_key(data.assembly_number), _part_key(data.title_info.get("WI #", ""))}
+    known |= {_part_key(p) for p in data.title_info.get("Parent Assemblies", "").replace(",", ";").split(";") if p.strip()}
+    pattern = part_number_pattern()
+    unknown: Dict[str, List[str]] = {}
+    for sheet, row in steps:
+        for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9-]*", row.description.translate(_DASHES)):
+            if pattern.fullmatch(token) and _part_key(token) not in known:
+                unknown.setdefault(token, []).append(f"{sheet} {row.step_number}")
+
+    if not used and not unknown:
+        return ["BOM check skipped: no step names a part number. Put part numbers in the steps "
+                "(the polish step writes them as 'Bracket (P-004)') to have every part checked."]
+    notes = []
+    unused = [p for key, p in parts.items() if key not in used]
+    if unused:
+        listed = ", ".join(f"{p.part_number} ({p.part_name})" if p.part_name else p.part_number for p in unused)
+        notes.append(f"BOM check: {len(unused)} part(s) on the Parts sheet are not named in any step: {listed}.")
+    if unknown:
+        listed = "; ".join(f"{number} ({', '.join(where)})" for number, where in unknown.items())
+        notes.append(f"BOM check: step text names part number(s) that are not on the Parts sheet: {listed}.")
+    if not notes:
+        notes.append("BOM check: every part on the Parts sheet is named in a step, and every part number "
+                     "in the steps is on the Parts sheet.")
+    return notes
+
 def tool_key(entry: str) -> str:
     """Compares tools by name, so '1/2" wrench' on the Equipment sheet matches '1/2" wrench (W1/2)'."""
     return re.sub(r"\s*\([^()]*\)\s*$", "", entry).strip().lower()
@@ -772,6 +831,7 @@ def read_process_sheet(
     unapproved: List[str] = []
     # The Time column is found by its header, so it can be added to any workbook.
     time_column = find_time_column(ws)
+    has_raw_note = normalize_header(ws.cell(row=1, column=RAW_NOTE_COLUMN).value) == "RAWNOTE"
     time_unit = wig_time.header_unit(clean_cell(ws.cell(row=1, column=time_column).value)) if time_column else None
 
     for row, values in iter_sheet_rows(ws, cols):
@@ -813,7 +873,9 @@ def read_process_sheet(
             except ValueError as reason:
                 errors.append(f"Sheet '{spec.sheet}', row {row}: the time for step {step_number} "
                               f"({clean_cell(raw_time)}) can't be read: {reason}.")
-        rows.append(ProcessRow(step_number=step_number, description=description, tools=tools, seconds=seconds))
+        raw_note = clean_cell(ws.cell(row=row, column=RAW_NOTE_COLUMN).value) if has_raw_note else ""
+        rows.append(ProcessRow(step_number=step_number, description=description, tools=tools, seconds=seconds,
+                               raw_note=raw_note))
 
     if spec.required and not rows:
         errors.append(f"Sheet '{spec.sheet}' has no valid rows.")
@@ -829,6 +891,7 @@ def read_process_sheet(
         )
     return rows
 
+RAW_NOTE_COLUMN = 3
 STATUS_COLUMN = 4
 TOOLS_COLUMN = 8
 HARD_PLACEHOLDER = "[HARD: description still to be written]"
@@ -2113,6 +2176,7 @@ def check_one(assembly_number: str) -> bool:
             if steps:
                 notes.append(f"{spec.sheet}: {len(steps)} step(s)")
         notes += step_time_notes(data, data.typed_assembly_time)
+        notes += bom_cross_check(data)
         callouts = [f"{spec.sheet} {row.step_number} ({split_callout(row.description)[0]})"
                     for spec in PROCESS_SECTIONS for row in data.steps_for(spec) if split_callout(row.description)[0]]
         if callouts:
@@ -2184,7 +2248,7 @@ def build_one(assembly_number: str, answers: Answers, make_pdf: bool) -> None:
 
     print("\nWork instruction created successfully.")
     print(f"Output file: {output_path}")
-    for note in step_time_notes(data, data.typed_assembly_time):
+    for note in step_time_notes(data, data.typed_assembly_time) + bom_cross_check(data):
         print(note)
     report_archive(archive)
     print(f"Parts read: {len(data.parts)}")

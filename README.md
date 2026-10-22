@@ -12,7 +12,7 @@ folder always holds exactly one current instruction.
 
 *Demo output: made-up parts and plain placeholder pictures, so it shows the layout, not a finished deck.*
 
-**Status:** working prototype. 197 automated tests (unit tests, end-to-end builds against synthetic
+**Status:** working prototype. 206 automated tests (unit tests, end-to-end builds against synthetic
 templates, and the command line); a GitHub Actions workflow runs them on Linux and Windows
 (Python 3.9, 3.12, 3.13). Every bug found so far is listed in
 [Bugs fixed](#bugs-fixed), each with a regression test. It has only been run on synthetic data, not on
@@ -266,6 +266,22 @@ in it. The column is found by its header, so any position works.
 - **From OneNote:** add a third column to your table holding just the time (`45 s`, `1m 30s`, `1:30`).
   `--import-onenote` puts it in the Time column, as text so Excel can't reinterpret it, and keeps it out
   of the note. A time you typed into the workbook survives a re-import of an unchanged note.
+
+### BOM cross-check
+
+`--check` and every build compare the Parts sheet with the steps and report two things:
+
+- **Parts no step names**, listed with their names: `P-002 (M5 washer)`. A part counts as named when
+  its number appears in a step's text or its floor note, ignoring case and dash style. Names aren't
+  matched, because words like "screw" are too generic.
+- **Part numbers in the steps that aren't on the Parts sheet**, with the steps they appear in:
+  `P-999 (Assembly 1, Assembly 2)`. "Looks like a part number" uses the glossary's
+  `part_number_pattern` (the same one the polish step uses). The assembly's own number and its parent
+  assemblies are never counted.
+
+These are warnings and never stop a build, since a part can legitimately go in without a step naming
+it. If no step names any part number at all, the check says it was skipped, rather than listing every
+part.
 
 ### Safety callouts
 
