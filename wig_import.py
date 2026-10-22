@@ -6,6 +6,7 @@ Word Document). This reads that table and writes:
 
     <assembly folder>/Assembly/1.jpg, 2.jpg, ...   one photo per step, in row order
     <assembly folder>/<assembly number>.xlsx       Assembly sheet: Step # | Description | Raw note
+                                                   (and column I, Time, if the table had a time column)
 
 Testing and Packaging work the same way: export a page for each and import it with the
 matching section, which fills the Testing or Packaging sheet and folder instead.
@@ -33,6 +34,7 @@ from openpyxl import load_workbook
 from PIL import Image
 
 import wig_images
+import wig_time
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
@@ -44,6 +46,7 @@ DEFAULT_MAX_PX = 1600
 IMAGE_FORMATS = {"jpg": ("JPEG", ".jpg"), "png": ("PNG", ".png")}
 STEP_IMAGE_NAME = re.compile(r"\d+\.(png|jpe?g)", re.IGNORECASE)
 SHEET_ASSEMBLY = "Assembly"
+TIME_COLUMN = 9   # column I, where the polish step's layout keeps step times
 OPTIONAL_SECTIONS = ("Testing", "Packaging")
 
 
@@ -53,6 +56,8 @@ class DocRow:
     row_number: int
     text: str
     images: List[bytes]
+    # A cell holding only a time ("45 s", "1m 30s", "1:30") goes here, not into the note.
+    time: Optional[str] = None
 
 
 @dataclass
@@ -142,9 +147,14 @@ def read_onenote_docx(path: Path) -> Tuple[str, List[DocRow]]:
                     rel_id = blip.get(f"{{{R_NS}}}embed")
                     if rel_id:
                         images.append(_image_bytes(archive, rels, rel_id))
+            time = None
+            durations = [t for t in texts if wig_time.is_duration_text(t)]
+            if len(texts) >= 2 and len(durations) == 1:
+                time = durations[0]
+                texts.remove(time)
             text = _clean(" ".join(texts))
             if text or images:
-                rows.append(DocRow(row_number, text, images))
+                rows.append(DocRow(row_number, text, images, time))
         if any(row.images for row in rows):
             return title, rows
 
@@ -260,8 +270,8 @@ def import_onenote(
     # On --replace, a step whose number and note are unchanged keeps its Description,
     # Status, Flags, Draft and Source note, so approvals and hand edits survive a re-export.
     previous = {}
-    for values in ws.iter_rows(min_row=2, max_col=7, values_only=True):
-        values = list(values) + [None] * (7 - len(values))
+    for values in ws.iter_rows(min_row=2, max_col=TIME_COLUMN, values_only=True):
+        values = list(values) + [None] * (TIME_COLUMN - len(values))
         raw = _clean(str(values[2] if values[2] is not None else values[1] or ""))
         if values[0] is not None and raw:
             previous[(str(values[0]).strip().removesuffix(".0"), raw)] = values[1:]
@@ -277,6 +287,10 @@ def import_onenote(
             kept += 1
         else:
             ws.append([number, row.text, row.text])
+        if row.time:
+            ws.cell(row=ws.max_row, column=TIME_COLUMN).value = row.time   # kept as text, so Excel can't reread it
+    if any(row.time for row in rows) and not ws.cell(row=1, column=TIME_COLUMN).value:
+        ws.cell(row=1, column=TIME_COLUMN).value = "Time"
     wb.save(workbook_path)
 
     return ImportResult(

@@ -12,7 +12,7 @@ folder always holds exactly one current instruction.
 
 *Demo output: made-up parts and plain placeholder pictures, so it shows the layout, not a finished deck.*
 
-**Status:** working prototype. 169 automated tests (unit tests, end-to-end builds against synthetic
+**Status:** working prototype. 191 automated tests (unit tests, end-to-end builds against synthetic
 templates, and the command line); a GitHub Actions workflow runs them on Linux and Windows
 (Python 3.9, 3.12, 3.13). Every bug found so far is listed in
 [Bugs fixed](#bugs-fixed), each with a regression test. It has only been run on synthetic data, not on
@@ -170,6 +170,7 @@ blank for you to write, and the step is marked HARD.
 | E Flags | What to fix, in plain words. |
 | F Draft, G Source note | The latest draft and the note it came from, used to spot changes. |
 | H Tools | The tools the note used, written `1/2" wrench (W1/2); #2 Phillips screwdriver (PH2)`. |
+| I Time | Your step time, if you record one (see below). The polish step never changes it. |
 
 A **To Resolve** sheet lists every flagged and HARD step in one place, which is your worklist for the
 drawings pass. Unrecognised words are counted in `to-add.csv` next to the glossary, most frequent first,
@@ -241,6 +242,30 @@ write anything. It also prints the parts, materials and tools it found, the step
 status counts from the polish step, and which deck is current. The exit code is 0 when the assembly
 would build and 1 when it wouldn't, so it works in scripts and in batch mode with several
 `--assembly` numbers.
+
+### Step times
+
+Add a column headed **Time** to a step sheet (Assembly, Testing or Packaging) and put each step's time
+in it. The column is found by its header, so any position works.
+
+| You type | Read as |
+|---|---|
+| `45 s`, `45s`, `2 min`, `1.5 min`, `1m 30s`, `1 min 30 sec`, `1 h 5 min` | that time |
+| `1:30`, `1:02:30` (typed as text) | minutes:seconds, hours:minutes:seconds |
+| `45` | only under a header that names the unit, such as **Time (s)** or **Time (min)**. Under a plain **Time** header it's an error, not a guess. |
+
+- **Leave ASSEMBLY TIME on Title Info blank and the cover shows the total of all the step times**
+  (Assembly, Testing and Packaging together), written like `12 min 30 s`. If any step has no time,
+  the build lists those steps instead of guessing.
+- **Type an ASSEMBLY TIME yourself and it is kept**, for example to include setup time. If it differs
+  from the step times, the build and `--check` say so.
+- The build and `--check` print each section's total, and how many steps were timed.
+- **Excel trap:** typing `1:30` into a cell that Excel treats as a time stores 1 hour 30 minutes. WIG
+  reads it the way Excel stored it, and flags any single step over an hour so you can catch it. Type
+  `1m 30s` instead.
+- **From OneNote:** add a third column to your table holding just the time (`45 s`, `1m 30s`, `1:30`).
+  `--import-onenote` puts it in the Time column, as text so Excel can't reinterpret it, and keeps it out
+  of the note. A time you typed into the workbook survives a re-import of an unchanged note.
 
 ### Footer on every page
 

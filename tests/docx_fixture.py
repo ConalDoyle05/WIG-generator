@@ -46,7 +46,7 @@ def make_docx(
     title: str = "Test page",
     with_table: bool = True,
 ) -> Path:
-    """rows are (text or None, photo bytes / list of photo bytes / None)."""
+    """rows are (text or None, photo bytes / list of photo bytes / None[, third cell text])."""
     media: List[Tuple[str, bytes]] = []
 
     def image_cell(photos) -> str:
@@ -71,10 +71,12 @@ def make_docx(
             return "<w:tc><w:p/></w:tc>"
         return f"<w:tc><w:p><w:r><w:t>{escape(text)}</w:t></w:r></w:p></w:tc>"
 
-    def row_xml(text, photos) -> str:
+    def row_xml(text, photos, extra=None) -> str:
         cells = [text_cell(text), image_cell(photos)]
         if image_first:
             cells.reverse()
+        if extra is not None:
+            cells.append(text_cell(extra))
         return "<w:tr>" + "".join(cells) + "</w:tr>"
 
     padding = '<w:tr><w:tc><w:p><w:r><w:t> </w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t> </w:t></w:r></w:p></w:tc></w:tr>'

@@ -89,6 +89,7 @@ from pptx.enum.text import PP_ALIGN
 from pptx.util import Inches, Pt
 
 import wig_images
+import wig_time
 
 # =============================================================================
 # 1. PROJECT PATHS AND FILE CONVENTIONS
@@ -131,6 +132,7 @@ REQUIRED_BASE_SHEETS = [
     SHEET_EQUIPMENT,
     SHEET_ASSEMBLY_STEPS,
 ]
+ASSEMBLY_TIME_FIELD = "ASSEMBLY TIME"
 REQUIRED_TITLE_FIELDS = [
     "WI #",
     "WI Title",
@@ -321,6 +323,8 @@ class ProcessRow:
     description: str
     # Tools the polish step found in the note, as written in column H ("1/2" wrench (W1/2)").
     tools: List[str] = field(default_factory=list)
+    # Seconds from the Time column, if the sheet has one and this step was timed.
+    seconds: Optional[float] = None
 
 @dataclass
 class WorkInstructionData:
@@ -339,6 +343,8 @@ class WorkInstructionData:
     # Process steps keyed by sheet name, one entry per PROCESS_SECTIONS spec.
     process_steps: Dict[str, List[ProcessRow]]
     is_draft: bool = False
+    # ASSEMBLY TIME as typed on Title Info (blank when it was added up from the step times).
+    typed_assembly_time: str = ""
 
     def steps_for(self, spec: SectionSpec) -> List[ProcessRow]:
         """Returns the step rows read for one process section."""
@@ -584,10 +590,12 @@ def read_title_info(wb, errors: List[str]) -> Dict[str, str]:
         field_name: clean_cell(ws.cell(row=2, column=column).value)
         for field_name, column in TITLE_INFO_COLUMNS.items()
     }
+    # ASSEMBLY TIME may be left blank when every step is timed: it is checked
+    # after the step sheets are read (see apply_step_times).
     missing_fields = [
         field_name
         for field_name in REQUIRED_TITLE_FIELDS
-        if not title_info.get(field_name)
+        if not title_info.get(field_name) and field_name != ASSEMBLY_TIME_FIELD
     ]
     if missing_fields:
         errors.append(
@@ -658,6 +666,74 @@ def read_equipment(wb) -> Tuple[List[str], List[str]]:
             tools.append(values[TOOLS_COL])
     return materials, tools
 
+def find_time_column(ws) -> Optional[int]:
+    """The column whose header starts with 'Time' ('Time', 'Time (s)', 'Time (min)'), if any."""
+    for column in range(1, ws.max_column + 1):
+        if normalize_header(ws.cell(row=1, column=column).value).startswith("TIME"):
+            return column
+    return None
+
+def step_time_summary(process_steps: Dict[str, List[ProcessRow]]) -> Tuple[float, List[Tuple[str, float, int, int]], List[str]]:
+    """(total seconds, [(section, seconds, timed steps, steps)], untimed 'Section step' labels)."""
+    total = 0.0
+    sections: List[Tuple[str, float, int, int]] = []
+    untimed: List[str] = []
+    for spec in PROCESS_SECTIONS:
+        steps = process_steps.get(spec.sheet, [])
+        if not steps:
+            continue
+        timed = [row.seconds for row in steps if row.seconds is not None]
+        section_total = sum(timed)
+        total += section_total
+        sections.append((spec.sheet, section_total, len(timed), len(steps)))
+        untimed += [f"{spec.sheet} {row.step_number}" for row in steps if row.seconds is None]
+    return total, sections, untimed
+
+def apply_step_times(title_info: Dict[str, str], process_steps: Dict[str, List[ProcessRow]], errors: List[str]) -> None:
+    """Fills a blank ASSEMBLY TIME from the step times, or reports what's missing."""
+    if title_info.get(ASSEMBLY_TIME_FIELD):
+        return
+    total, sections, untimed = step_time_summary(process_steps)
+    timed_any = any(timed for _, _, timed, _ in sections)
+    if timed_any and not untimed:
+        title_info[ASSEMBLY_TIME_FIELD] = wig_time.format_duration(total)
+    elif timed_any:
+        errors.append(
+            "Title Info ASSEMBLY TIME is blank, and these steps have no time, so it can't be added up: "
+            + ", ".join(untimed) + ".\nFill in their times, or type the assembly time on Title Info."
+        )
+    else:
+        errors.append(
+            "The following required Title Info values are blank:\n\n" + ASSEMBLY_TIME_FIELD
+            + "\n\n(Or leave it blank and give every step a time in a Time column.)"
+        )
+
+def step_time_notes(data: "WorkInstructionData", typed_time: str) -> List[str]:
+    """Lines for the build and --check output: totals per section, a mismatch, suspiciously long steps."""
+    total, sections, untimed = step_time_summary(data.process_steps)
+    if not any(timed for _, _, timed, _ in sections):
+        return []
+    parts = []
+    for name, seconds, timed, count in sections:
+        coverage = "" if timed == count else f", {timed} of {count} steps timed"
+        parts.append(f"{name} {wig_time.format_duration(seconds)}{coverage}")
+    notes = [f"Step times: {'; '.join(parts)}. Total {wig_time.format_duration(total)}."]
+    if typed_time and not untimed:
+        try:
+            typed = wig_time.parse_duration(typed_time, 60)
+        except ValueError:
+            typed = None
+        if typed is not None and abs(typed - total) >= 1:
+            notes.append(f"Note: Title Info says ASSEMBLY TIME {typed_time}, but the step times add up to "
+                         f"{wig_time.format_duration(total)}. The cover shows what you typed.")
+    for spec in PROCESS_SECTIONS:
+        for row in data.process_steps.get(spec.sheet, []):
+            if row.seconds is not None and row.seconds >= wig_time.LONG_STEP_SECONDS:
+                notes.append(f"Check: {spec.sheet} step {row.step_number} is timed at "
+                             f"{wig_time.format_duration(row.seconds)}. If you typed something like 1:30, Excel may "
+                             "have read it as 1 hour 30 minutes. Type it as 1m 30s instead.")
+    return notes
+
 def tool_key(entry: str) -> str:
     """Compares tools by name, so '1/2" wrench' on the Equipment sheet matches '1/2" wrench (W1/2)'."""
     return re.sub(r"\s*\([^()]*\)\s*$", "", entry).strip().lower()
@@ -694,6 +770,9 @@ def read_process_sheet(
     has_status = normalize_header(ws.cell(row=1, column=STATUS_COLUMN).value) == "STATUS"
     has_tools = normalize_header(ws.cell(row=1, column=TOOLS_COLUMN).value) == "TOOLS"
     unapproved: List[str] = []
+    # The Time column is found by its header, so it can be added to any workbook.
+    time_column = find_time_column(ws)
+    time_unit = wig_time.header_unit(clean_cell(ws.cell(row=1, column=time_column).value)) if time_column else None
 
     for row, values in iter_sheet_rows(ws, cols):
         step_number = normalize_number(values[STEP_NUMBER_COL])
@@ -726,7 +805,15 @@ def read_process_sheet(
         tools = []
         if has_tools:
             tools = [t.strip() for t in clean_cell(ws.cell(row=row, column=TOOLS_COLUMN).value).split(";") if t.strip()]
-        rows.append(ProcessRow(step_number=step_number, description=description, tools=tools))
+        seconds = None
+        if time_column:
+            raw_time = ws.cell(row=row, column=time_column).value
+            try:
+                seconds = wig_time.parse_duration(raw_time, time_unit)
+            except ValueError as reason:
+                errors.append(f"Sheet '{spec.sheet}', row {row}: the time for step {step_number} "
+                              f"({clean_cell(raw_time)}) can't be read: {reason}.")
+        rows.append(ProcessRow(step_number=step_number, description=description, tools=tools, seconds=seconds))
 
     if spec.required and not rows:
         errors.append(f"Sheet '{spec.sheet}' has no valid rows.")
@@ -802,6 +889,8 @@ def read_and_validate_data(
     for spec in PROCESS_SECTIONS:
         if not spec.required and process_steps[spec.sheet]:
             require_section_folder(spec, assembly_number, errors)
+    typed_assembly_time = title_info.get(ASSEMBLY_TIME_FIELD, "")
+    apply_step_times(title_info, process_steps, errors)
     raise_validation_errors(errors)
     tools = merge_tool_lists(
         [tool for spec in PROCESS_SECTIONS for row in process_steps[spec.sheet] for tool in row.tools],
@@ -822,6 +911,7 @@ def read_and_validate_data(
         tools=tools,
         process_steps=process_steps,
         is_draft=ALLOW_DRAFT,
+        typed_assembly_time=typed_assembly_time,
     )
 
 # =============================================================================
@@ -1985,6 +2075,7 @@ def check_one(assembly_number: str) -> bool:
             steps = data.steps_for(spec)
             if steps:
                 notes.append(f"{spec.sheet}: {len(steps)} step(s)")
+        notes += step_time_notes(data, data.typed_assembly_time)
     notes += approval_summary(assembly_number)
     current = find_existing_wi(assembly_number) if assembly_base_folder(assembly_number).is_dir() else None
     notes.append(f"Current deck: {current.name}" if current else "No deck built yet (next build is an initial release).")
@@ -2052,6 +2143,8 @@ def build_one(assembly_number: str, answers: Answers, make_pdf: bool) -> None:
 
     print("\nWork instruction created successfully.")
     print(f"Output file: {output_path}")
+    for note in step_time_notes(data, data.typed_assembly_time):
+        print(note)
     report_archive(archive)
     print(f"Parts read: {len(data.parts)}")
     print(f"Parts slides created: {math.ceil(len(data.parts) / PARTS_PER_SLIDE)}")

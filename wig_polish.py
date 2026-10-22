@@ -15,7 +15,8 @@ Markers you can type in a note:
             number is not flagged.
 
 Each process sheet (Assembly, Testing, Packaging) uses these columns:
-    A Step #   B Description   C Raw note   D Status   E Flags   F Draft   G Source note   H Tools
+    A Step #   B Description   C Raw note   D Status   E Flags   F Draft   G Source note   H Tools   I Time
+(Time is yours: the polish step never changes it.)
 Status is Flagged, Ready (nothing flagged, waiting for your approval), HARD, or
 Approved, which only you set. The generator refuses to build a sheet that has
 a Status column until every step on it is Approved (or you build a --draft).
@@ -39,7 +40,7 @@ from wig_glossary import BASE_WORDS, Glossary
 
 SECTIONS = ("Assembly", "Testing", "Packaging")
 STATUS_FLAGGED, STATUS_READY, STATUS_HARD, STATUS_APPROVED = "Flagged", "Ready", "HARD", "Approved"
-HEADERS = {3: "Raw note", 4: "Status", 5: "Flags", 6: "Draft", 7: "Source note", 8: "Tools"}
+HEADERS = {3: "Raw note", 4: "Status", 5: "Flags", 6: "Draft", 7: "Source note", 8: "Tools", 9: "Time"}
 COL_STEP, COL_DESC, COL_RAW, COL_STATUS, COL_FLAGS, COL_DRAFT, COL_SOURCE, COL_TOOLS = 1, 2, 3, 4, 5, 6, 7, 8
 # Tools column: the tool codes a step used, written "1/2" wrench (W1/2); ...". The generator
 # lists them on the equipment page, so it needs no glossary at build time.
