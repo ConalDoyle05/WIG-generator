@@ -25,11 +25,7 @@ import generate_work_instruction as wig  # noqa: E402
 from docx_fixture import make_docx, png_bytes  # noqa: E402
 from wig_scaffold import SAMPLE_ASSEMBLY, scaffold_project  # noqa: E402
 
-GLOBALS = [
-    "DESIGN_FOLDER", "PART_IMAGE_FOLDER", "TEMPLATE_PATH", "TITLE_SLIDE_INDEX",
-    "REVISION_LOG_SLIDE_INDEX", "WELDING_SLIDE_INDEX", "PARTS_TEMPLATE_SLIDE_INDEX",
-    "EQUIPMENT_SLIDE_INDEX", "PROCESS_SECTIONS", "FOOTER_ENABLED", "ALLOW_DRAFT", "GLOSSARY_PATH",
-]
+GLOBALS = list(wig.CONFIGURABLE_GLOBALS) + ["FOOTER_ENABLED", "ALLOW_DRAFT"]
 
 
 class CliTestCase(unittest.TestCase):
@@ -117,9 +113,13 @@ class FlagTests(CliTestCase):
         self.assertEqual(code, 1)
         self.assertIn("99-999-99", err)
 
-    def test_invalid_flag_value_is_rejected_by_argparse(self):
+    def test_steps_per_slide_must_be_a_known_layout(self):
+        code, _, err = self.run_cli("--assembly", SAMPLE_ASSEMBLY, *self.paths(), "--initials", "CD",
+                                    "--welding", "N", "--steps-per-slide", "3", "--initial-release")
+        self.assertEqual(code, 1)
+        self.assertIn("--steps-per-slide must be one of: 2, 4, 8", err)
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-            wig.main(["--steps-per-slide", "3"])
+            wig.main(["--steps-per-slide", "four"])
 
 
 class BatchTests(CliTestCase):

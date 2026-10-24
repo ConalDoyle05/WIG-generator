@@ -2012,21 +2012,36 @@ CONFIG_PATH_KEYS = {
     "glossary": "GLOSSARY_PATH",
 }
 
+# Role of each process section, in PROCESS_SECTIONS order. Config keys use these
+# role names, so they keep working even when a section's sheet is renamed.
+SECTION_ROLES = ("assembly", "testing", "packaging")
+CONFIG_SECTIONS = ("slides", "paths", "layout")
+# Generous bound that still catches typos such as 500 instead of 5.00. A slide is
+# 10 or 13.33 inches wide and 7.5 tall.
+MAX_LAYOUT_INCHES = 20.0
+# Every module setting a --config file can change. Tests restore these after each run.
+CONFIGURABLE_GLOBALS = (
+    "TITLE_SLIDE_INDEX", "REVISION_LOG_SLIDE_INDEX", "WELDING_SLIDE_INDEX", "PARTS_TEMPLATE_SLIDE_INDEX",
+    "EQUIPMENT_SLIDE_INDEX", "PROCESS_SECTIONS", "DESIGN_FOLDER", "PART_IMAGE_FOLDER", "TEMPLATE_PATH",
+    "GLOSSARY_PATH", "PART_CARD_POSITIONS", "PARTS_PER_SLIDE", "TITLE_IMAGE_BOX", "PROCESS_TITLE_BOX",
+    "PART_IMAGE_W", "PART_IMAGE_H", "PART_TEXT_W", "PART_TEXT_H", "PROCESS_LAYOUTS", "STEP_BADGE",
+    "STANDARD_DESCRIPTION_CHAR_LIMIT", "LONG_DESCRIPTION_BOTTOM_LIMIT", "LONG_DESCRIPTION_ROW_GAP",
+)
+
 def load_config(config_path: Path) -> None:
-    """Applies a JSON config: template slide positions and default folder paths.
+    """Applies a JSON config: template slide positions, page layout, and default folder paths.
 
     Example:
         {"slides": {"title": 0, "revision_log": 1, "welding": 3, "parts": 4,
                     "equipment": 5, "assembly": 6, "testing": 8, "packaging": 9},
+         "layout": {"title_image_box": [5.05, 1.75, 4.30, 5.00]},
          "paths": {"template_path": "Templates/our template.pptx"}}
 
     Any key may be left out. Relative paths resolve against the config file.
-    Command-line flags still override whatever the config says.
+    Command-line flags still override whatever the config says. Everything is
+    checked first and applied only if all of it is valid, so a bad config never
+    leaves half its settings in place.
     """
-    global TITLE_SLIDE_INDEX, REVISION_LOG_SLIDE_INDEX, WELDING_SLIDE_INDEX
-    global PARTS_TEMPLATE_SLIDE_INDEX, EQUIPMENT_SLIDE_INDEX, PROCESS_SECTIONS
-    global DESIGN_FOLDER, PART_IMAGE_FOLDER, TEMPLATE_PATH
-
     config_path = Path(config_path)
     try:
         config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -2034,10 +2049,18 @@ def load_config(config_path: Path) -> None:
         raise ValueError(f"Could not read config file {config_path}: {exc}")
     if not isinstance(config, dict):
         raise ValueError(f"Config file {config_path} must contain a JSON object.")
-    unknown_top = set(config) - {"slides", "paths"}
+    unknown_top = set(config) - set(CONFIG_SECTIONS)
     if unknown_top:
-        raise ValueError(f"Unknown config key(s): {', '.join(sorted(unknown_top))}. Allowed: slides, paths.")
+        raise ValueError(f"Unknown config key(s): {', '.join(sorted(unknown_top))}. "
+                         f"Allowed: {', '.join(CONFIG_SECTIONS)}.")
 
+    updates: Dict[str, object] = {}
+    _config_slides(config.get("slides", {}), updates)
+    _config_layout(config.get("layout", {}), updates)
+    _config_paths(config.get("paths", {}), config_path, updates)
+    globals().update(updates)
+
+def _config_slides(given, updates: Dict[str, object]) -> None:
     slides = {
         "title": TITLE_SLIDE_INDEX,
         "revision_log": REVISION_LOG_SLIDE_INDEX,
@@ -2045,10 +2068,9 @@ def load_config(config_path: Path) -> None:
         "parts": PARTS_TEMPLATE_SLIDE_INDEX,
         "equipment": EQUIPMENT_SLIDE_INDEX,
     }
-    for spec in PROCESS_SECTIONS:
-        slides[spec.sheet.lower()] = spec.template_index
+    for role, spec in zip(SECTION_ROLES, PROCESS_SECTIONS):
+        slides[role] = spec.template_index
 
-    given = config.get("slides", {})
     if not isinstance(given, dict):
         raise ValueError('Config "slides" must be an object such as {"parts": 4}.')
     bad_keys = set(given) - set(CONFIG_SLIDE_KEYS)
@@ -2072,21 +2094,142 @@ def load_config(config_path: Path) -> None:
     if max(slides["title"], slides["revision_log"]) > slides["welding"]:
         raise ValueError("The title and revision_log slides must come before the welding slide.")
 
-    TITLE_SLIDE_INDEX = slides["title"]
-    REVISION_LOG_SLIDE_INDEX = slides["revision_log"]
-    WELDING_SLIDE_INDEX = slides["welding"]
-    PARTS_TEMPLATE_SLIDE_INDEX = slides["parts"]
-    EQUIPMENT_SLIDE_INDEX = slides["equipment"]
-    PROCESS_SECTIONS = [
-        dataclasses.replace(spec, template_index=slides[spec.sheet.lower()]) for spec in PROCESS_SECTIONS
-    ]
+    updates.update(
+        TITLE_SLIDE_INDEX=slides["title"],
+        REVISION_LOG_SLIDE_INDEX=slides["revision_log"],
+        WELDING_SLIDE_INDEX=slides["welding"],
+        PARTS_TEMPLATE_SLIDE_INDEX=slides["parts"],
+        EQUIPMENT_SLIDE_INDEX=slides["equipment"],
+        PROCESS_SECTIONS=[dataclasses.replace(spec, template_index=slides[role])
+                          for role, spec in zip(SECTION_ROLES, PROCESS_SECTIONS)],
+    )
 
-    paths = config.get("paths", {})
+def _config_paths(paths, config_path: Path, updates: Dict[str, object]) -> None:
     if not isinstance(paths, dict) or set(paths) - set(CONFIG_PATH_KEYS):
         raise ValueError(f"Config \"paths\" may only contain: {', '.join(CONFIG_PATH_KEYS)}.")
     for key, value in paths.items():
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f'Config path "{key}" must be text.')
         resolved = (config_path.parent / value).resolve() if not Path(value).is_absolute() else Path(value)
-        globals()[CONFIG_PATH_KEYS[key]] = resolved
+        updates[CONFIG_PATH_KEYS[key]] = resolved
+
+# -- layout -------------------------------------------------------------------
+
+LAYOUT_KEYS = (
+    "part_card_positions", "title_image_box", "process_title_box", "part_image_size", "part_text_size",
+    "process_layouts", "step_badges", "description_char_limit", "description_bottom_limit",
+    "description_row_gap",
+)
+
+def _number(value, what: str, *, positive: bool = False, upper: float = MAX_LAYOUT_INCHES) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{what} must be a number, got {value!r}.")
+    if value < 0 or (positive and value == 0) or value > upper:
+        bound = "greater than 0" if positive else "0 or more"
+        raise ValueError(f"{what} must be {bound} and at most {upper:g}, got {value!r}.")
+    return float(value)
+
+def _pair(value, what: str, *, positive: bool = False) -> Tuple[float, float]:
+    if not isinstance(value, list) or len(value) != 2:
+        raise ValueError(f"{what} must be a list of 2 numbers, got {value!r}.")
+    return (_number(value[0], f"{what}[0]", positive=positive), _number(value[1], f"{what}[1]", positive=positive))
+
+def _box(value, what: str) -> Tuple[float, float, float, float]:
+    """[left, top, width, height] in inches."""
+    if not isinstance(value, list) or len(value) != 4:
+        raise ValueError(f"{what} must be [left, top, width, height] in inches, got {value!r}.")
+    x, y = _number(value[0], f"{what} left"), _number(value[1], f"{what} top")
+    w, h = _number(value[2], f"{what} width", positive=True), _number(value[3], f"{what} height", positive=True)
+    return (x, y, w, h)
+
+def _font(value, what: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not 6 <= value <= 72:
+        raise ValueError(f"{what} must be a whole font size from 6 to 72, got {value!r}.")
+    return value
+
+def _steps_key(key: str) -> int:
+    try:
+        count = int(key)
+    except (TypeError, ValueError):
+        count = 0
+    if count < 1 or str(count) != str(key).strip():
+        raise ValueError(f'Layout keys are steps per slide as whole numbers ("2", "4", "6"), got {key!r}.')
+    return count
+
+def _config_layout(given, updates: Dict[str, object]) -> None:
+    if not isinstance(given, dict):
+        raise ValueError('Config "layout" must be an object, such as {"title_image_box": [5, 1.75, 4.3, 5]}.')
+    unknown = set(given) - set(LAYOUT_KEYS)
+    if unknown:
+        raise ValueError(f"Unknown layout key(s): {', '.join(sorted(unknown))}. Allowed: {', '.join(LAYOUT_KEYS)}.")
+
+    if "part_card_positions" in given:
+        cards = given["part_card_positions"]
+        if not isinstance(cards, list) or not 1 <= len(cards) <= 30:
+            raise ValueError("layout part_card_positions must be a list of 1 to 30 [left, top] pairs.")
+        positions = [_pair(card, f"layout part_card_positions[{i}]") for i, card in enumerate(cards)]
+        updates.update(PART_CARD_POSITIONS=positions, PARTS_PER_SLIDE=len(positions))
+    for key, name in (("title_image_box", "TITLE_IMAGE_BOX"), ("process_title_box", "PROCESS_TITLE_BOX")):
+        if key in given:
+            updates[name] = _box(given[key], f"layout {key}")
+    if "part_image_size" in given:
+        updates["PART_IMAGE_W"], updates["PART_IMAGE_H"] = _pair(given["part_image_size"], "layout part_image_size", positive=True)
+    if "part_text_size" in given:
+        updates["PART_TEXT_W"], updates["PART_TEXT_H"] = _pair(given["part_text_size"], "layout part_text_size", positive=True)
+
+    layouts = PROCESS_LAYOUTS
+    if "process_layouts" in given:
+        raw = given["process_layouts"]
+        if not isinstance(raw, dict) or not raw:
+            raise ValueError('layout process_layouts must be an object such as {"4": {"font_size": 10, "slots": [...]}}.')
+        layouts = {}
+        for key, spec in raw.items():
+            count = _steps_key(key)
+            where = f"layout process_layouts[{key}]"
+            if not isinstance(spec, dict) or set(spec) != {"font_size", "slots"}:
+                raise ValueError(f'{where} must have exactly "font_size" and "slots".')
+            slots = spec["slots"]
+            if not isinstance(slots, list) or len(slots) != count:
+                raise ValueError(f"{where} needs exactly {count} slot(s), one per step, got "
+                                 f"{len(slots) if isinstance(slots, list) else slots!r}.")
+            boxes = []
+            for i, slot in enumerate(slots):
+                if not isinstance(slot, dict) or set(slot) != {"image", "description"}:
+                    raise ValueError(f'{where} slot {i + 1} must have exactly "image" and "description" boxes.')
+                boxes.append((_box(slot["image"], f"{where} slot {i + 1} image"),
+                              _box(slot["description"], f"{where} slot {i + 1} description")))
+            layouts[count] = (boxes, _font(spec["font_size"], f"{where} font_size"))
+        updates["PROCESS_LAYOUTS"] = layouts
+
+    badges = {n: b for n, b in STEP_BADGE.items() if n in layouts}
+    if "step_badges" in given:
+        raw = given["step_badges"]
+        if not isinstance(raw, dict):
+            raise ValueError('layout step_badges must be an object such as {"4": {"diameter": 0.42, "font_size": 16}}.')
+        for key, spec in raw.items():
+            count = _steps_key(key)
+            where = f"layout step_badges[{key}]"
+            if not isinstance(spec, dict) or set(spec) != {"diameter", "font_size"}:
+                raise ValueError(f'{where} must have exactly "diameter" and "font_size".')
+            badges[count] = (_number(spec["diameter"], f"{where} diameter", positive=True, upper=2),
+                             _font(spec["font_size"], f"{where} font_size"))
+    missing = sorted(set(layouts) - set(badges))
+    if missing:
+        raise ValueError("layout step_badges needs an entry for every process layout; missing: "
+                         + ", ".join(str(n) for n in missing) + '. Example: {"6": {"diameter": 0.38, "font_size": 14}}.')
+    if "process_layouts" in given or "step_badges" in given:
+        updates["STEP_BADGE"] = {n: badges[n] for n in layouts}
+
+    if "description_char_limit" in given:
+        limit = given["description_char_limit"]
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 2000:
+            raise ValueError(f"layout description_char_limit must be a whole number from 1 to 2000, got {limit!r}.")
+        updates["STANDARD_DESCRIPTION_CHAR_LIMIT"] = limit
+    if "description_bottom_limit" in given:
+        updates["LONG_DESCRIPTION_BOTTOM_LIMIT"] = _number(given["description_bottom_limit"],
+                                                           "layout description_bottom_limit", positive=True)
+    if "description_row_gap" in given:
+        updates["LONG_DESCRIPTION_ROW_GAP"] = _number(given["description_row_gap"], "layout description_row_gap", upper=2)
 
 def find_soffice() -> Optional[str]:
     """Locates LibreOffice (SOFFICE_BIN overrides the search)."""
@@ -2170,7 +2313,8 @@ def build_parser() -> argparse.ArgumentParser:
     answers = parser.add_argument_group("answers (skip the prompts)")
     answers.add_argument("--initials", help="Reviser initials for the revision log.")
     answers.add_argument("--welding", type=str.upper, choices=["Y", "N"], help="Keep the welding slide (Y) or remove it (N).")
-    answers.add_argument("--steps-per-slide", choices=layouts, help="Process steps per slide.")
+    answers.add_argument("--steps-per-slide", type=int, metavar="N",
+                         help=f"Process steps per slide: {'/'.join(layouts)}, or any layout your --config adds.")
     release = answers.add_mutually_exclusive_group()
     release.add_argument("--initial-release", action="store_true", help="This is the first release of the instruction.")
     release.add_argument("--revision", metavar="REV", help="Revise the existing instruction to this revision, for example D.2.")
@@ -2276,7 +2420,9 @@ def collect_answers(args: argparse.Namespace) -> Answers:
     initials = clean_cell(args.initials).upper() if args.initials else get_required_text(
         "Enter reviser initials (Ex: CD): ", "Reviser initials cannot be blank.", upper=True)
     uses_welding = (args.welding == "Y") if args.welding else get_yes_no("Is welding used in this assembly? (Y/N): ")
-    items_per_slide = int(args.steps_per_slide) if args.steps_per_slide else get_steps_per_slide()
+    if args.steps_per_slide is not None and args.steps_per_slide not in PROCESS_LAYOUTS:
+        raise ValueError(f"--steps-per-slide must be one of: {', '.join(str(n) for n in sorted(PROCESS_LAYOUTS))}.")
+    items_per_slide = args.steps_per_slide if args.steps_per_slide is not None else get_steps_per_slide()
     if args.initial_release:
         is_revision, new_revision, change = False, None, "Initial Release"
     elif args.revision is not None:

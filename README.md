@@ -12,7 +12,7 @@ folder always holds exactly one current instruction.
 
 *Demo output: made-up parts and plain placeholder pictures, so it shows the layout, not a finished deck.*
 
-**Status:** working prototype. 226 automated tests (unit tests, end-to-end builds against synthetic
+**Status:** working prototype. 233 automated tests (unit tests, end-to-end builds against synthetic
 templates, and the command line); a GitHub Actions workflow runs them on Linux and Windows
 (Python 3.9, 3.12, 3.13). Every bug found so far is listed in
 [Bugs fixed](#bugs-fixed), each with a regression test. It has only been run on synthetic data, not on
@@ -430,6 +430,48 @@ position, or sections out of order. The order must be welding, parts, equipment,
 packaging, with title and revision log ahead of welding. WIG copies pages as sections grow, so that
 order can't change. If the template is shorter than the layout expects, you get an error naming the
 template instead of a crash.
+
+### Page layout
+
+The `"layout"` section of the same `--config` file moves and resizes what WIG draws. Sizes are in
+inches. Boxes are `[left, top, width, height]`. Leave out anything you don't want to change.
+
+```json
+{
+  "layout": {
+    "title_image_box": [5.05, 1.75, 4.30, 5.00],
+    "process_title_box": [2.30, 0.20, 5.40, 0.70],
+    "part_card_positions": [[0.45, 1.00], [5.05, 1.00], [0.45, 2.25], [5.05, 2.25]],
+    "part_image_size": [0.95, 0.95],
+    "part_text_size": [3.45, 1.08],
+    "process_layouts": {
+      "6": {"font_size": 9, "slots": [
+        {"image": [0.30, 1.00, 2.95, 2.30], "description": [0.30, 3.35, 2.95, 0.45]}
+      ]}
+    },
+    "step_badges": {"6": {"diameter": 0.36, "font_size": 12}},
+    "description_char_limit": 153,
+    "description_bottom_limit": 7.30,
+    "description_row_gap": 0.05
+  }
+}
+```
+
+(The 6-step example is cut short. It needs one slot per step, six in all.)
+
+- `part_card_positions`: one `[left, top]` per part card. The number of positions is how many parts
+  fit on a parts page.
+- `process_layouts`: the step grids, keyed by steps per slide. Each has one image box and one
+  description box per step, plus a font size. **Giving this replaces all the built-in grids**, so
+  include 2, 4 and 8 too if you still want them. `--steps-per-slide` accepts exactly the grids you
+  define.
+- `step_badges`: the numbered circle's size for each grid. Every grid needs one.
+- `description_char_limit`: longer descriptions grow their box downward, down to
+  `description_bottom_limit` (and never into the footer), keeping `description_row_gap` above the
+  next box.
+
+WIG checks the whole file before using any of it: wrong counts, missing badges, impossible sizes and
+typos like `500` for `5.00` are refused with the reason, and nothing from that config is applied.
 
 ## How the code is organised
 
