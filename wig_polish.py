@@ -389,15 +389,16 @@ def _text(value) -> str:
     return text
 
 
-def read_parts(wb) -> List[Part]:
-    """Part # in column A and Part Name in column D, as the generator reads them."""
-    if "Parts" not in wb.sheetnames:
+def read_parts(wb, sheet: str = "Parts", columns: Tuple[int, int] = (1, 4)) -> List[Part]:
+    """Part # and Part Name (columns A and D by default), as the generator reads them."""
+    if sheet not in wb.sheetnames:
         return []
-    ws = wb["Parts"]
+    ws = wb[sheet]
+    number_col, name_col = columns
     parts = []
     for row in ws.iter_rows(min_row=2, values_only=True):
-        number = _text(row[0] if len(row) > 0 else None)
-        name = _text(row[3] if len(row) > 3 else None)
+        number = _text(row[number_col - 1] if len(row) >= number_col else None)
+        name = _text(row[name_col - 1] if len(row) >= name_col else None)
         if number:
             parts.append(Part(number, name or number))
     return parts
@@ -445,6 +446,8 @@ def polish_workbook(
     learned_words_path: Optional[Path] = None,
     to_add_path: Optional[Path] = None,
     sections: Iterable[str] = SECTIONS,
+    parts_sheet: str = "Parts",
+    part_columns: Tuple[int, int] = (1, 4),
 ) -> PolishReport:
     """Polishes every process sheet in one workbook and writes the results back.
 
@@ -456,7 +459,7 @@ def polish_workbook(
     if not workbook_path.exists():
         raise ValueError(f"No workbook at {workbook_path}. Import the steps first, or create the workbook.")
     wb = load_workbook(workbook_path)
-    parts = read_parts(wb)
+    parts = read_parts(wb, parts_sheet, part_columns)
     report = PolishReport()
 
     # Words from steps you have approved are correct by definition: learn them.

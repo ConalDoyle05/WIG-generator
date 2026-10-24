@@ -212,10 +212,13 @@ def import_onenote(
     image_format: str = "jpg",
     sheet: str = SHEET_ASSEMBLY,
     folder: Optional[str] = None,
+    section_sheets: Optional[List[str]] = None,
 ) -> ImportResult:
     """Writes the photos and one process sheet (Assembly, Testing or Packaging) from a OneNote Word export.
 
     sheet names the workbook sheet to fill and folder the photo subfolder (default: the same name).
+    section_sheets lists the step sheets in order, required one first; it defaults to
+    Assembly, Testing, Packaging and only changes when a --config renames them.
 
     Nothing is written until the whole file has been read, validated and every photo
     converted. Existing steps are never overwritten unless replace is True.
@@ -224,8 +227,10 @@ def import_onenote(
         raise ValueError(f"Image format must be one of: {', '.join(IMAGE_FORMATS)}.")
     if max_px < 200:
         raise ValueError("--max-px must be at least 200.")
-    if sheet not in (SHEET_ASSEMBLY, *OPTIONAL_SECTIONS):
-        raise ValueError(f"Section must be one of: {', '.join((SHEET_ASSEMBLY, *OPTIONAL_SECTIONS))}.")
+    allowed = list(section_sheets) if section_sheets else [SHEET_ASSEMBLY, *OPTIONAL_SECTIONS]
+    if sheet not in allowed:
+        raise ValueError(f"Section must be one of: {', '.join(allowed)}.")
+    required_sheet = allowed[0]
     folder = folder or sheet
     pil_format, extension = IMAGE_FORMATS[image_format]
 
@@ -238,7 +243,7 @@ def import_onenote(
     workbook_path = Path(workbook_path)
     workbook_exists = workbook_path.exists()
     wb = load_workbook(workbook_path) if workbook_exists else None
-    if wb is not None and sheet == SHEET_ASSEMBLY and sheet not in wb.sheetnames:
+    if wb is not None and sheet == required_sheet and sheet not in wb.sheetnames:
         raise ValueError(f"{workbook_path.name} has no '{sheet}' sheet to put the steps in.")
     existing_rows = _assembly_rows_in(wb[sheet]) if wb is not None and sheet in wb.sheetnames else 0
     if (stale or existing_rows) and not replace:

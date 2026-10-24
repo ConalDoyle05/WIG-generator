@@ -12,7 +12,7 @@ folder always holds exactly one current instruction.
 
 *Demo output: made-up parts and plain placeholder pictures, so it shows the layout, not a finished deck.*
 
-**Status:** working prototype. 233 automated tests (unit tests, end-to-end builds against synthetic
+**Status:** working prototype. 243 automated tests (unit tests, end-to-end builds against synthetic
 templates, and the command line); a GitHub Actions workflow runs them on Linux and Windows
 (Python 3.9, 3.12, 3.13). Every bug found so far is listed in
 [Bugs fixed](#bugs-fixed), each with a regression test. It has only been run on synthetic data, not on
@@ -472,6 +472,48 @@ inches. Boxes are `[left, top, width, height]`. Leave out anything you don't wan
 
 WIG checks the whole file before using any of it: wrong counts, missing badges, impossible sizes and
 typos like `500` for `5.00` are refused with the reason, and nothing from that config is applied.
+
+### Sheet names, columns and markers
+
+If your workbooks or template use different names, describe them in a `"conventions"` section of the
+`--config` file instead of renaming everything. Leave out anything that already matches.
+
+```json
+{
+  "conventions": {
+    "sheets": {"title_info": "Cover", "parts": "BOM", "equipment": "Kit",
+               "assembly": "Steps", "testing": "Checks", "packaging": "Pack"},
+    "title_info_columns": {"WI #": 1, "WI Title": 2, "REV #": 3, "PRODUCTION CELL": 4,
+                           "FORMER WI#": 5, "ASSEMBLY TIME": 6, "Parent Assemblies": 7},
+    "required_title_fields": ["WI #", "WI Title", "REV #"],
+    "parts_columns": {"part_number": 1, "bomname": 2, "quantity": 3, "part_name": 4},
+    "equipment_columns": {"materials": 1, "tools": 2},
+    "subassembly_marker": "MFG BOM",
+    "folders": {"cancelled": "CANCELLED", "assembly": "Assembly", "testing": "Testing", "packaging": "Packaging"},
+    "placeholders": {"title": "{TITLE}", "assembly_number": "{Assembly Number}", "rev": "{REV}"},
+    "step_markers": ["{Assembly Step picture}", "{Step Description}"],
+    "parts_markers": ["{Part Number}", "{Part Name}"],
+    "equipment_markers": ["*Materials*", "*Tools*"],
+    "blank_page_marker": "leave page blank if no data",
+    "optional_page_titles": ["cycle time", "size and weight"]
+  }
+}
+```
+
+- `placeholders` covers every cover-page field: `assembly_number`, `title`, `rev`, `date`, `cell`,
+  `former`, `time`, `parent_assemblies`, `included_subassemblies`.
+- `required_title_fields` decides which Title Info cells may not be blank. `REV #` always stays
+  required, since the deck's file name and revision log use it. If you make `ASSEMBLY TIME` optional, a
+  blank one stays blank.
+- The import, the polish step and `--section` follow renamed sheets, folders and Parts columns.
+- **The step sheets' own columns stay fixed** (A Step #, B Description, C Raw note ... I Time), because
+  the OneNote import and the polish step write to exactly those positions.
+- `wig --init` always creates the standard names, so a project with its own names keeps its config
+  next to it.
+
+As with the rest of the config file, everything is checked before any of it is used. Duplicate names,
+two fields in one column, sheet names Excel wouldn't accept, and folder paths in place of folder names
+are refused with the reason.
 
 ## How the code is organised
 

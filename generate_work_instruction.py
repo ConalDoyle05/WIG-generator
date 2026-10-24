@@ -304,6 +304,28 @@ PROCESS_SECTIONS = [
 ]
 
 # Placeholder markers stripped by name from a template slide that has them.
+# Template text the generator fills in or strips. All of it can be renamed with the
+# "conventions" section of --config, for templates that use different markers.
+TITLE_PLACEHOLDERS = {
+    "assembly_number": "{Assembly Number}",
+    "title": "{TITLE}",
+    "rev": "{REV}",
+    "date": "{DATE}",
+    "cell": "{CELL}",
+    "former": "{FORMER}",
+    "time": "{TIME}",
+    "parent_assemblies": "{PARENT_ASSEMBLIES}",
+    "included_subassemblies": "{INCLUDED_SUBASSEMBLIES}",
+}
+PARTS_PLACEHOLDER_MARKERS = ["{Part Number}", "{BOMNAME}", "{Quantity}", "{Description}", "{Part Name}"]
+EQUIPMENT_PLACEHOLDER_MARKERS = ["*Materials*", "{Material", "*Tools*", "{Tool"]
+# An optional template page (Cycle Time, Size and Weight) is dropped from the deck
+# when it still carries this marker, i.e. nobody filled it in.
+BLANK_PAGE_MARKER = "leave page blank if no data"
+OPTIONAL_PAGE_TITLES = ["cycle time", "size and weight"]
+# Parts with this BOMNAME are subassemblies, listed on the cover page.
+SUBASSEMBLY_MARKER = "MFG BOM"
+
 STEP_PLACEHOLDER_MARKERS = [
     "{Assembly Step picture}",
     "{Step Description}",
@@ -648,7 +670,7 @@ def read_parts(wb, errors: List[str]) -> Tuple[List[PartRow], List[PartRow]]:
             part_name=part_name,
         )
         parts.append(part)
-        if bomname == "MFG BOM":
+        if bomname == SUBASSEMBLY_MARKER.upper():
             included_subassemblies.append(part)
 
     if not parts:
@@ -701,6 +723,8 @@ def apply_step_times(title_info: Dict[str, str], process_steps: Dict[str, List[P
     if title_info.get(ASSEMBLY_TIME_FIELD):
         return
     total, sections, untimed = step_time_summary(process_steps)
+    if ASSEMBLY_TIME_FIELD not in REQUIRED_TITLE_FIELDS and not any(timed for _, _, timed, _ in sections):
+        return   # a --config made it optional, and nothing is timed: leave it blank
     timed_any = any(timed for _, _, timed, _ in sections)
     if timed_any and not untimed:
         title_info[ASSEMBLY_TIME_FIELD] = wig_time.format_duration(total)
@@ -1094,17 +1118,18 @@ def replace_text_everywhere(slide, replacements: Dict[str, str]) -> None:
 
 def title_replacements(data: WorkInstructionData) -> Dict[str, str]:
     """Builds all title-slide placeholder replacement values."""
-    return {
-        "{Assembly Number}": data.assembly_number,
-        "{TITLE}": data.title_info["WI Title"],
-        "{REV}": data.title_info["REV #"],
-        "{DATE}": data.title_info["DATE"],
-        "{CELL}": data.title_info["PRODUCTION CELL"],
-        "{FORMER}": data.title_info["FORMER WI#"],
-        "{TIME}": data.title_info["ASSEMBLY TIME"],
-        "{PARENT_ASSEMBLIES}": format_parent_list(data.title_info.get("Parent Assemblies", "")),
-        "{INCLUDED_SUBASSEMBLIES}": format_included_subassemblies(data),
+    values = {
+        "assembly_number": data.assembly_number,
+        "title": data.title_info.get("WI Title", ""),
+        "rev": data.title_info["REV #"],
+        "date": data.title_info["DATE"],
+        "cell": data.title_info.get("PRODUCTION CELL", ""),
+        "former": data.title_info.get("FORMER WI#", ""),
+        "time": data.title_info.get("ASSEMBLY TIME", ""),
+        "parent_assemblies": format_parent_list(data.title_info.get("Parent Assemblies", "")),
+        "included_subassemblies": format_included_subassemblies(data),
     }
+    return {TITLE_PLACEHOLDERS[key]: value for key, value in values.items()}
 
 def add_textbox(
     slide,
@@ -1458,7 +1483,7 @@ def populate_parts_slide(slide, parts: List[PartRow], slide_number_label: str) -
     remove_shapes(slide, pictures=True)
     remove_template_text(
         slide,
-        ["{Part Number}", "{BOMNAME}", "{Quantity}", "{Description}", "{Part Name}"],
+        PARTS_PLACEHOLDER_MARKERS,
     )
     set_parts_title(slide, f"Parts List - {slide_number_label}")
     for index, part in enumerate(parts[:PARTS_PER_SLIDE]):
@@ -1476,7 +1501,7 @@ def populate_parts_slide(slide, parts: List[PartRow], slide_number_label: str) -
 
 def populate_equipment_slide(slide, materials: List[str], tools: List[str]) -> None:
     """Populates the equipment slide with materials and tools."""
-    remove_template_text(slide, ["*Materials*", "{Material", "*Tools*", "{Tool"])
+    remove_template_text(slide, EQUIPMENT_PLACEHOLDER_MARKERS)
     for heading, items, box in (
         ("Materials", materials, (0.90, 1.55, 3.85, 4.65)),
         ("Tools", tools, (5.10, 1.55, 3.85, 4.65)),
@@ -1638,8 +1663,8 @@ def delete_blank_optional_template_slides(prs: Presentation) -> None:
     removed from the generated work instruction when no content has replaced
     the template's 'Leave page blank if no data' instruction.
     """
-    blank_marker = "leave page blank if no data"
-    optional_titles = {"cycle time", "size and weight"}
+    blank_marker = BLANK_PAGE_MARKER.lower()
+    optional_titles = {title.lower() for title in OPTIONAL_PAGE_TITLES}
 
     for slide_index in range(len(prs.slides) - 1, -1, -1):
         slide = prs.slides[slide_index]
@@ -2015,7 +2040,7 @@ CONFIG_PATH_KEYS = {
 # Role of each process section, in PROCESS_SECTIONS order. Config keys use these
 # role names, so they keep working even when a section's sheet is renamed.
 SECTION_ROLES = ("assembly", "testing", "packaging")
-CONFIG_SECTIONS = ("slides", "paths", "layout")
+CONFIG_SECTIONS = ("slides", "paths", "layout", "conventions")
 # Generous bound that still catches typos such as 500 instead of 5.00. A slide is
 # 10 or 13.33 inches wide and 7.5 tall.
 MAX_LAYOUT_INCHES = 20.0
@@ -2026,6 +2051,11 @@ CONFIGURABLE_GLOBALS = (
     "GLOSSARY_PATH", "PART_CARD_POSITIONS", "PARTS_PER_SLIDE", "TITLE_IMAGE_BOX", "PROCESS_TITLE_BOX",
     "PART_IMAGE_W", "PART_IMAGE_H", "PART_TEXT_W", "PART_TEXT_H", "PROCESS_LAYOUTS", "STEP_BADGE",
     "STANDARD_DESCRIPTION_CHAR_LIMIT", "LONG_DESCRIPTION_BOTTOM_LIMIT", "LONG_DESCRIPTION_ROW_GAP",
+    "SHEET_TITLE_INFO", "SHEET_PARTS", "SHEET_EQUIPMENT", "SHEET_ASSEMBLY_STEPS", "SHEET_TESTING",
+    "SHEET_PACKAGING", "REQUIRED_BASE_SHEETS", "TITLE_INFO_COLUMNS", "REQUIRED_TITLE_FIELDS", "PARTS_COLUMNS",
+    "EQUIPMENT_COLUMNS", "SUBASSEMBLY_MARKER", "CANCELLED_FOLDER_NAME", "TITLE_PLACEHOLDERS",
+    "STEP_PLACEHOLDER_MARKERS", "PARTS_PLACEHOLDER_MARKERS", "EQUIPMENT_PLACEHOLDER_MARKERS",
+    "BLANK_PAGE_MARKER", "OPTIONAL_PAGE_TITLES",
 )
 
 def load_config(config_path: Path) -> None:
@@ -2057,6 +2087,7 @@ def load_config(config_path: Path) -> None:
     updates: Dict[str, object] = {}
     _config_slides(config.get("slides", {}), updates)
     _config_layout(config.get("layout", {}), updates)
+    _config_conventions(config.get("conventions", {}), updates)
     _config_paths(config.get("paths", {}), config_path, updates)
     globals().update(updates)
 
@@ -2112,6 +2143,127 @@ def _config_paths(paths, config_path: Path, updates: Dict[str, object]) -> None:
             raise ValueError(f'Config path "{key}" must be text.')
         resolved = (config_path.parent / value).resolve() if not Path(value).is_absolute() else Path(value)
         updates[CONFIG_PATH_KEYS[key]] = resolved
+
+# -- conventions --------------------------------------------------------------
+
+CONVENTION_KEYS = (
+    "sheets", "title_info_columns", "required_title_fields", "parts_columns", "equipment_columns",
+    "subassembly_marker", "folders", "placeholders", "step_markers", "parts_markers", "equipment_markers",
+    "blank_page_marker", "optional_page_titles",
+)
+SHEET_ROLES = {"title_info": "SHEET_TITLE_INFO", "parts": "SHEET_PARTS", "equipment": "SHEET_EQUIPMENT",
+               "assembly": "SHEET_ASSEMBLY_STEPS", "testing": "SHEET_TESTING", "packaging": "SHEET_PACKAGING"}
+PARTS_COLUMN_ROLES = {"part_number": PART_NUMBER_COL, "bomname": BOMNAME_COL, "quantity": QUANTITY_COL,
+                      "part_name": PART_NAME_COL}
+EQUIPMENT_COLUMN_ROLES = {"materials": MATERIALS_COL, "tools": TOOLS_COL}
+FOLDER_ROLES = ("cancelled",) + SECTION_ROLES
+_BAD_SHEET_CHARACTERS = set('[]:*?/\\')
+
+def _text_value(value, what: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{what} must be non-empty text, got {value!r}.")
+    return value.strip()
+
+def _text_list(value, what: str) -> List[str]:
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"{what} must be a list of text.")
+    return [_text_value(item, f"{what} entry") for item in value]
+
+def _known_keys(given, allowed, what: str) -> dict:
+    if not isinstance(given, dict):
+        raise ValueError(f"{what} must be an object.")
+    unknown = set(given) - set(allowed)
+    if unknown:
+        raise ValueError(f"Unknown {what} key(s): {', '.join(sorted(unknown))}. Allowed: {', '.join(allowed)}.")
+    return given
+
+def _columns(given, defaults: Dict[str, int], roles: Dict[str, str], what: str) -> Dict[str, int]:
+    """Merges column positions over the defaults; roles maps config names to internal field names."""
+    columns = dict(defaults)
+    for key, value in _known_keys(given, list(roles), what).items():
+        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 50:
+            raise ValueError(f'{what} "{key}" must be a column number from 1 to 50 (A is 1), got {value!r}.')
+        columns[roles[key]] = value
+    if len(set(columns.values())) != len(columns):
+        raise ValueError(f"{what}: two fields share one column.")
+    return columns
+
+def _config_conventions(given, updates: Dict[str, object]) -> None:
+    """Sheet names, column positions, markers and folder names. The step sheets' own columns (A to I)
+    stay fixed: the OneNote import and the polish step write to exactly those positions."""
+    given = _known_keys(given, CONVENTION_KEYS, 'config "conventions"')
+
+    sheets = {role: globals()[name] for role, name in SHEET_ROLES.items()}
+    for role, value in _known_keys(given.get("sheets", {}), list(SHEET_ROLES), "conventions sheets").items():
+        name = _text_value(value, f'conventions sheets "{role}"')
+        if len(name) > 31 or set(name) & _BAD_SHEET_CHARACTERS:
+            raise ValueError(f'Sheet name "{name}" isn\'t allowed by Excel: at most 31 characters, none of [ ] : * ? / \\.')
+        sheets[role] = name
+    if len({name.lower() for name in sheets.values()}) != len(sheets):
+        raise ValueError("conventions sheets: two roles share one sheet name.")
+
+    folders = {"cancelled": CANCELLED_FOLDER_NAME}
+    folders.update({role: spec.folder for role, spec in zip(SECTION_ROLES, PROCESS_SECTIONS)})
+    for role, value in _known_keys(given.get("folders", {}), list(FOLDER_ROLES), "conventions folders").items():
+        name = _text_value(value, f'conventions folders "{role}"')
+        if "/" in name or "\\" in name or name in (".", ".."):
+            raise ValueError(f'Folder name "{name}" must be a single folder name, not a path.')
+        folders[role] = name
+    if len({name.lower() for name in folders.values()}) != len(folders):
+        raise ValueError("conventions folders: two roles share one folder name.")
+
+    title_columns = dict(TITLE_INFO_COLUMNS)
+    for key, value in _known_keys(given.get("title_info_columns", {}), list(TITLE_INFO_COLUMNS),
+                                  "conventions title_info_columns").items():
+        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 50:
+            raise ValueError(f'conventions title_info_columns "{key}" must be a column number from 1 to 50, got {value!r}.')
+        title_columns[key] = value
+    if len(set(title_columns.values())) != len(title_columns):
+        raise ValueError("conventions title_info_columns: two fields share one column.")
+
+    required = list(REQUIRED_TITLE_FIELDS)
+    if "required_title_fields" in given:
+        required = _text_list(given["required_title_fields"], "conventions required_title_fields")
+        unknown = [f for f in required if f not in TITLE_INFO_COLUMNS]
+        if unknown:
+            raise ValueError(f"Unknown title field(s): {', '.join(unknown)}. Known: {', '.join(TITLE_INFO_COLUMNS)}.")
+        if "REV #" not in required:
+            raise ValueError('"REV #" must stay required: the deck\'s file name and revision log depend on it.')
+
+    placeholders = dict(TITLE_PLACEHOLDERS)
+    for key, value in _known_keys(given.get("placeholders", {}), list(TITLE_PLACEHOLDERS),
+                                  "conventions placeholders").items():
+        placeholders[key] = _text_value(value, f'conventions placeholders "{key}"')
+    if len(set(placeholders.values())) != len(placeholders):
+        raise ValueError("conventions placeholders: two fields share one placeholder.")
+
+    sections = updates.get("PROCESS_SECTIONS", PROCESS_SECTIONS)
+    sheet_names = {"assembly": sheets["assembly"], "testing": sheets["testing"], "packaging": sheets["packaging"]}
+    updates.update(
+        SHEET_TITLE_INFO=sheets["title_info"], SHEET_PARTS=sheets["parts"], SHEET_EQUIPMENT=sheets["equipment"],
+        SHEET_ASSEMBLY_STEPS=sheets["assembly"], SHEET_TESTING=sheets["testing"], SHEET_PACKAGING=sheets["packaging"],
+        REQUIRED_BASE_SHEETS=[sheets["title_info"], sheets["parts"], sheets["equipment"], sheets["assembly"]],
+        PROCESS_SECTIONS=[dataclasses.replace(spec, sheet=sheet_names[role], folder=folders[role])
+                          for role, spec in zip(SECTION_ROLES, sections)],
+        CANCELLED_FOLDER_NAME=folders["cancelled"],
+        TITLE_INFO_COLUMNS=title_columns,
+        REQUIRED_TITLE_FIELDS=required,
+        PARTS_COLUMNS=_columns(given.get("parts_columns", {}), PARTS_COLUMNS, PARTS_COLUMN_ROLES,
+                               "conventions parts_columns"),
+        EQUIPMENT_COLUMNS=_columns(given.get("equipment_columns", {}), EQUIPMENT_COLUMNS, EQUIPMENT_COLUMN_ROLES,
+                                   "conventions equipment_columns"),
+        TITLE_PLACEHOLDERS=placeholders,
+    )
+    if "subassembly_marker" in given:
+        updates["SUBASSEMBLY_MARKER"] = _text_value(given["subassembly_marker"], "conventions subassembly_marker").upper()
+    for key, name in (("step_markers", "STEP_PLACEHOLDER_MARKERS"), ("parts_markers", "PARTS_PLACEHOLDER_MARKERS"),
+                      ("equipment_markers", "EQUIPMENT_PLACEHOLDER_MARKERS")):
+        if key in given:
+            updates[name] = _text_list(given[key], f"conventions {key}")
+    if "blank_page_marker" in given:
+        updates["BLANK_PAGE_MARKER"] = _text_value(given["blank_page_marker"], "conventions blank_page_marker")
+    if "optional_page_titles" in given:
+        updates["OPTIONAL_PAGE_TITLES"] = _text_list(given["optional_page_titles"], "conventions optional_page_titles")
 
 # -- layout -------------------------------------------------------------------
 
@@ -2383,6 +2535,9 @@ def polish_assembly(assembly_number: str) -> None:
         assembly_excel_path(assembly_number), glossary,
         learned_words_path=path.parent / "learned-words.txt",
         to_add_path=path.parent / "to-add.csv",
+        sections=[spec.sheet for spec in PROCESS_SECTIONS],
+        parts_sheet=SHEET_PARTS,
+        part_columns=(PARTS_COLUMNS[PART_NUMBER_COL], PARTS_COLUMNS[PART_NAME_COL]),
     )
     counts = report.counts
     print(f"\nPolished {assembly_number} ({', '.join(report.sections) or 'no step sheets'}): "
@@ -2568,7 +2723,8 @@ def build_one(assembly_number: str, answers: Answers, make_pdf: bool) -> None:
 def import_steps_from_onenote(assembly_number: str, args: argparse.Namespace) -> None:
     """Runs the OneNote import for one assembly and prints what it did."""
     from wig_import import import_onenote
-    spec = next(spec for spec in PROCESS_SECTIONS if spec.sheet.lower() == args.section)
+    # --section names the role (assembly / testing / packaging), so it works with renamed sheets.
+    spec = PROCESS_SECTIONS[SECTION_ROLES.index(args.section)]
     result = import_onenote(
         Path(args.import_onenote),
         assembly_base_folder(assembly_number),
@@ -2578,6 +2734,7 @@ def import_steps_from_onenote(assembly_number: str, args: argparse.Namespace) ->
         image_format=args.image_format,
         sheet=spec.sheet,
         folder=spec.folder,
+        section_sheets=[s.sheet for s in PROCESS_SECTIONS],
     )
     print(f"Imported {result.steps} {spec.sheet} step(s) for {assembly_number} from OneNote page"
           + (f' "{result.title}"' if result.title else "") + ".")
